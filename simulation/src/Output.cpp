@@ -1,5 +1,7 @@
 #include "Output.hpp"
+#include <iomanip>
 #include <stdexcept>
+#include <sstream>
 
 OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
     : outputDirectory(outputDirectory)
@@ -7,8 +9,12 @@ OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
     std::filesystem::create_directories(outputDirectory);
     unitsFile.open(outputDirectory / "units.csv");
     stationEventsFile.open(outputDirectory / "station_events.csv");
+    sensorReadingsFile.open(outputDirectory / "sensor_readings.csv");
+    manualChecksFile.open(outputDirectory / "manual_checks.csv");
+    inspectionResultsFile.open(outputDirectory / "inspection_results.csv");
 
-    if (!unitsFile || !stationEventsFile) {
+    if (!unitsFile || !stationEventsFile || !sensorReadingsFile ||
+        !manualChecksFile || !inspectionResultsFile) {
         throw std::runtime_error("Failed to open output files");
     }
 
@@ -28,9 +34,32 @@ OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
         << "previous_state,"
         << "new_state,"
         << "cycle_time_ms\n";
+
+    sensorReadingsFile << "timestamp_ms,station_id,sensor_type,value,unit\n";
+    manualChecksFile << "timestamp_ms,station_id,unit_id,check_type,result\n";
+    inspectionResultsFile
+        << "timestamp_ms,station_id,unit_id,defect_type,severity,result\n";
 }
 
 namespace {
+
+std::string stationKey(StationId id) {
+    std::ostringstream stream;
+    stream << 'S' << std::setw(2) << std::setfill('0') << id + 1;
+    return stream.str();
+}
+
+std::string unitKey(UnitId id) {
+    std::ostringstream stream;
+    stream << 'U' << std::setw(6) << std::setfill('0') << id;
+    return stream.str();
+}
+
+std::string eventKey(std::uint64_t id) {
+    std::ostringstream stream;
+    stream << "EV" << std::setw(6) << std::setfill('0') << id;
+    return stream.str();
+}
 
 std::string toString(StationState state) {
     switch (state) {
@@ -91,35 +120,36 @@ void OutputWriter::writeStations(const std::vector<Station>& stations)
 
     for (const Station& station : stations) {
         file
-            << "S" << station.id << ','
-            << "Station_" << station.id << ','
-            << "AUTOMATED,"
-            << station.currentCycleTime << ','
-            << 0 << ','
+            << stationKey(station.id) << ','
+            << station.name << ','
+            << station.archetype << ','
+            << station.meanCycleTime << ','
+            << static_cast<Time>(station.meanCycleTime * station.cycleTimeCV) << ','
             << station.bufferCapacity << ','
-            << "NONE\n";
+            << station.sensorCoverage << '\n';
     }
 }
 
 void OutputWriter::writeUnit(UnitId unitId, Time createdAt)
 {
+    const std::string model = unitId % 5 == 0 ? "MODEL_B" : "MODEL_A";
+    const std::string batch = unitId % 7 == 0 ? "BATCH_02" : "BATCH_01";
     unitsFile
-        << "U" << unitId << ','
+        << unitKey(unitId) << ','
         << createdAt << ','
-        << "MODEL_A,"
-        << "BATCH_001\n";
+        << model << ',' << batch << '\n';
 }
 
 void OutputWriter::writeStationEvent(const StationEvent& event)
 {
     stationEventsFile
-        << "EV" << nextEventId++ << ','
+        << eventKey(nextEventId++) << ','
         << event.timestamp << ','
         << toString(event.type) << ','
-        << "S" << event.stationId << ',';
+        << stationKey(event.stationId) << ',';
 
     if (event.unitId.has_value()) {
-        stationEventsFile << "U" << *event.unitId;
+        stationEventsFile << unitKey(*event.unitId);
     }
 
     stationEventsFile << ',';
@@ -147,4 +177,47 @@ void OutputWriter::writeStationEvent(const StationEvent& event)
     }
 
     stationEventsFile << '\n';
+}
+
+void OutputWriter::writeSensorReading(
+    Time timestamp, StationId stationId, const std::string& sensorType,
+    double value, const std::string& unit)
+{
+    sensorReadingsFile << timestamp << ',' << stationKey(stationId) << ','
+                       << sensorType << ',' << value << ',' << unit << '\n';
+}
+
+void OutputWriter::writeManualCheck(
+    Time timestamp, StationId stationId, UnitId unitId,
+    const std::string& checkType, const std::string& result)
+{
+    manualChecksFile << timestamp << ',' << stationKey(stationId) << ',' << unitKey(unitId)
+                     << ',' << checkType << ',' << result << '\n';
+}
+
+void OutputWriter::writeInspectionResult(
+    Time timestamp, StationId stationId, UnitId unitId,
+    const std::string& defectType, std::optional<int> severity,
+    const std::string& result)
+{
+    inspectionResultsFile << timestamp << ',' << stationKey(stationId) << ',' << unitKey(unitId)
+                          << ',' << defectType << ',';
+    if (severity.has_value()) inspectionResultsFile << *severity;
+    inspectionResultsFile << ',' << result << '\n';
+}
+
+void OutputWriter::writeRunMetadata(
+    const std::string& runId, std::uint32_t randomSeed,
+    Time duration, std::size_t stationCount, UnitId unitsCreated)
+{
+    std::ofstream file(outputDirectory / "run_metadata.json");
+    if (!file) throw std::runtime_error("Failed to open run_metadata.json");
+
+    file << "{\n"
+         << "  \"run_id\": \"" << runId << "\",\n"
+         << "  \"random_seed\": " << randomSeed << ",\n"
+         << "  \"simulation_duration_ms\": " << duration << ",\n"
+         << "  \"station_count\": " << stationCount << ",\n"
+         << "  \"units_created\": " << unitsCreated << ",\n"
+         << "  \"schema_version\": \"1.0\"\n}\n";
 }

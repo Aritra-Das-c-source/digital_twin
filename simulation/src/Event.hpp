@@ -3,7 +3,8 @@
 #include "Station.hpp"
 
 enum class SimEventType {
-    PROCESSING_COMPLETE
+    PROCESSING_COMPLETE,
+    SENSOR_SAMPLE
 };
 
 struct SimEvent {

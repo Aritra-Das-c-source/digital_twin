@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <optional>
 #include <queue>
+#include <string>
 
 using StationId = std::uint32_t;
 using Time = std::int64_t;
@@ -19,8 +20,11 @@ enum class StationState {
 
 struct Station {
     StationId id;
+    std::string name;
+    std::string archetype;
     Time meanCycleTime;
     double cycleTimeCV = 0.0;
+    std::string sensorCoverage;
 
     bool isSource = false;
     bool isSink = false;

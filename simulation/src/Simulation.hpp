@@ -7,6 +7,7 @@
 #include <queue>
 #include <vector>
 #include <random>
+#include <unordered_map>
 
 struct EventCompare {
     bool operator()(const SimEvent& a, const SimEvent& b) const {
@@ -23,6 +24,8 @@ private:
     Time currentTime = 0;
     UnitId nextUnitId = 1;
     std::mt19937 rng;
+    std::unordered_map<UnitId, bool> latentDefects;
+    std::vector<double> stationWear;
     std::vector<Station> stations;
     std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> events;
     OutputWriter output;
@@ -34,6 +37,10 @@ private:
     void scheduleEvent(const SimEvent& event);
     void handleEvent(const SimEvent& event);
     void handleProcessingComplete(const SimEvent& event);
+    void handleSensorSample(const SimEvent& event);
     void tryStartProcessing(Station& station);
     UnitId createUnit();
+    void emitObservableData(const Station& station, UnitId unitId);
+    void emitSensorSample(const Station& station);
+    Time sensorSamplingInterval(const Station& station) const;
 };

@@ -2,6 +2,7 @@
 
 int main() {
     Simulation simulation;
-    simulation.run(200);
+    // One illustrative eight-hour production shift, in milliseconds.
+    simulation.run(28'800'000);
     return 0;
 }
