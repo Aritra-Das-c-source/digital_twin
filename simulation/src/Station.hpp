@@ -3,6 +3,7 @@
 #include "Unit.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <optional>
 #include <queue>
 
@@ -24,6 +25,7 @@ struct Station {
     bool isSink = false;
 
     StationState state = StationState::IDLE;
+    std::size_t bufferCapacity;
     std::queue<UnitId> buffer;
     std::optional<UnitId> currentUnit;
 };

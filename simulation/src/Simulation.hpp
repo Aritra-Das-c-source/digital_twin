@@ -26,6 +26,8 @@ private:
     OutputWriter output;
 
     void initializeFactory();
+    bool canAcceptUnit(const Station& station) const;
+    void tryUnblockUpstream(Station& station);
     void scheduleEvent(const SimEvent& event);
     void handleEvent(const SimEvent& event);
     void handleProcessingComplete(const SimEvent& event);

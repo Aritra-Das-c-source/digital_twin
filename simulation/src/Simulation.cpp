@@ -10,11 +10,44 @@ Simulation::Simulation() : output("output/run_001")
 
 void Simulation::initializeFactory() {
     stations = {
-        {0, 10, true,  false},
-        {1, 20, false, false},
-        {2, 15, false, false},
-        {3, 0,  false, true}
+        {0, 10, true, false, StationState::IDLE, 3},
+        {1, 20, false, false, StationState::IDLE, 3},
+        {2, 15, false, false, StationState::IDLE, 2},
+        {3, 0, false, true, StationState::IDLE, 1}
     };
+}
+
+bool Simulation::canAcceptUnit(const Station& station) const {
+    return station.buffer.size() < station.bufferCapacity;
+}
+
+void Simulation::tryUnblockUpstream(Station& station) {
+    if (station.isSource) return;
+
+    Station& upstream = stations[station.id - 1];
+    if (upstream.state != StationState::BLOCKED) return;
+    if (!upstream.currentUnit.has_value()) return;
+    if (!canAcceptUnit(station)) return;
+
+    UnitId unitId = *upstream.currentUnit;
+
+    station.buffer.push(unitId);
+
+    upstream.currentUnit.reset();
+    upstream.state = StationState::IDLE;
+
+    output.writeStationEvent({
+        currentTime,
+        StationEventType::UNIT_ARRIVED,
+        station.id,
+        unitId,
+        station.buffer.size(),
+        std::nullopt,
+        std::nullopt,
+        std::nullopt
+    });
+
+    tryStartProcessing(upstream);
 }
 
 void Simulation::run(Time until) {
@@ -66,6 +99,7 @@ void Simulation::tryStartProcessing(Station& station) {
 
         unitId = station.buffer.front();
         station.buffer.pop();
+        tryUnblockUpstream(station);
     }
 
     StationState previousState = station.state;
@@ -106,28 +140,35 @@ void Simulation::handleProcessingComplete(const SimEvent& event) {
         station.cycleTime
     });
 
-    station.currentUnit.reset();
-
     if (station.isSink) {
+        station.currentUnit.reset();
         station.state = StationState::IDLE;
+        tryStartProcessing(station);
         return;
     }
 
     Station& nextStation = stations[station.id + 1];
-    nextStation.buffer.push(event.unitId);
 
-    output.writeStationEvent({
-        currentTime,
-        StationEventType::UNIT_ARRIVED,
-        nextStation.id,
-        event.unitId,
-        nextStation.buffer.size(),
-        std::nullopt,
-        std::nullopt,
-        std::nullopt
-    });
+    if (canAcceptUnit(nextStation)) {
+        station.currentUnit.reset();
+        nextStation.buffer.push(event.unitId);
 
-    tryStartProcessing(nextStation);
-    station.state = StationState::IDLE;
-    tryStartProcessing(station);
+        output.writeStationEvent({
+            currentTime,
+            StationEventType::UNIT_ARRIVED,
+            nextStation.id,
+            event.unitId,
+            nextStation.buffer.size(),
+            std::nullopt,
+            std::nullopt,
+            std::nullopt
+        });
+
+        station.state = StationState::IDLE;
+        tryStartProcessing(nextStation);
+        tryStartProcessing(station);
+    }
+    else {
+        station.state = StationState::BLOCKED;
+    }
 }
