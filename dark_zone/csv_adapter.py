@@ -95,6 +95,7 @@ def derive_historical_dwell_csv(
     output_csv: str = "historical_dwell.csv",
     entry_event_type: str = "PROCESSING_STARTED",
     exit_event_type: str = "PROCESSING_COMPLETED",
+    dark_zone_station_ids: Optional[set] = None,
 ) -> pd.DataFrame:
     """
     Builds the historical_dwell.csv that Layer 1 needs (station_id, variant,
@@ -115,6 +116,9 @@ def derive_historical_dwell_csv(
     events_df = pd.read_csv(station_events_csv)
     units_df = pd.read_csv(units_csv)
     variant_lookup = dict(zip(units_df["unit_id"], units_df["vehicle_model"]))
+
+    if dark_zone_station_ids is not None:
+        events_df = events_df[events_df["station_id"].isin(dark_zone_station_ids)]
 
     entries = events_df[events_df["event_type"] == entry_event_type]
     exits = events_df[events_df["event_type"] == exit_event_type]
@@ -217,4 +221,100 @@ def load_events_from_csv(
     if unrecognized_types_seen:
         print(f"⚠ Skipped events with UNRECOGNIZED types/configs: {unrecognized_types_seen}")
 
+    return events
+
+
+def load_manual_checks_as_andon_events(
+    manual_checks_csv: str,
+    units_csv: str,
+    dark_zone_station_ids: Optional[set] = None,
+) -> list[DarkZoneEvent]:
+    """
+    Layer 5 adapter: manual_checks.csv (station_id, unit_id, timestamp_ms,
+    check_type, result) -> ANDON_SCAN events.
+
+    Data-verified behavior (checked against real run_001 output): the
+    VISUAL_ALIGNMENT check fires exactly at PROCESSING_COMPLETED for every
+    recorded check (progress fraction 1.0, std 0.0 across 2,257 samples) —
+    so checkpoint_progress=1.0 is not a guess here, it's confirmed from the
+    data. If a future simulator run adds mid-cycle manual checks, this
+    assumption will need revisiting — the ANDON_SCAN likelihood in
+    orchestrator.py already handles non-1.0 claims correctly via its
+    plausibility gate, so no downstream change would be needed, just this
+    constant.
+
+    The check's PASS/FAIL result doesn't detectably shift dwell time in the
+    data (FAIL mean 59.3s vs PASS mean 59.9s) but is carried through in
+    `payload` anyway — useful for downstream QA/defect-rate reporting even
+    though it isn't currently used as filter evidence.
+    """
+    mc_df = pd.read_csv(manual_checks_csv)
+    units_df = pd.read_csv(units_csv)
+    variant_lookup = dict(zip(units_df["unit_id"], units_df["vehicle_model"]))
+
+    if dark_zone_station_ids is not None:
+        before = len(mc_df)
+        mc_df = mc_df[mc_df["station_id"].isin(dark_zone_station_ids)]
+        dropped = before - len(mc_df)
+        if dropped > 0:
+            print(f"(Filtered out {dropped} manual_checks row(s) at non-dark-zone stations.)")
+
+    events: list[DarkZoneEvent] = []
+    for row in mc_df.itertuples(index=False):
+        events.append(DarkZoneEvent(
+            event_type=EventType.ANDON_SCAN,
+            vehicle_id=row.unit_id,
+            station_id=row.station_id,
+            ts=row.timestamp_ms / 1000.0,
+            variant=variant_lookup.get(row.unit_id),
+            checkpoint_progress=1.0,
+            payload={"check_type": row.check_type, "result": row.result},
+        ))
+    return events
+
+
+def load_all_dark_zone_events(
+    station_events_csv: str,
+    units_csv: str,
+    manual_checks_csv: Optional[str] = None,
+    dark_zone_station_ids: Optional[set] = None,
+) -> list[DarkZoneEvent]:
+    """
+    Combines entry/exit events (station_events.csv) with Layer 5 events
+    (manual_checks.csv, if provided) into a single chronologically sorted
+    stream ready for orchestrator.route_event(). This is the function
+    run_pipeline.py should call — it's the one entry point that assembles
+    the full event stream for the dark-zone stations.
+    """
+    events = load_events_from_csv(station_events_csv, units_csv)
+
+    if dark_zone_station_ids is not None:
+        before = len(events)
+        events = [e for e in events if e.station_id in dark_zone_station_ids]
+        dropped = before - len(events)
+        if dropped > 0:
+            print(f"(Filtered out {dropped} station_events.csv event(s) at non-dark-zone stations "
+                  f"— those stations have real sensor coverage and are out of scope here.)")
+
+    if manual_checks_csv:
+        andon_events = load_manual_checks_as_andon_events(
+            manual_checks_csv, units_csv, dark_zone_station_ids
+        )
+        events.extend(andon_events)
+
+    # Sort by timestamp, with a tie-break priority: when two events share the
+    # exact same ts (common here — the VISUAL_ALIGNMENT check fires at the
+    # same instant as PROCESSING_COMPLETED), evidence/checkpoint events MUST
+    # be applied before STATION_EXIT, or the vehicle gets torn down first and
+    # the evidence is silently rejected as "unknown vehicle." Verified this
+    # was happening 1:1 with the real data before this fix.
+    _tie_priority = {
+        EventType.STATION_ENTRY: 0,
+        EventType.RFID_CHECKPOINT: 1,
+        EventType.POWER_DRAW: 1,
+        EventType.ANDON_SCAN: 1,
+        EventType.TICK: 1,
+        EventType.STATION_EXIT: 2,
+    }
+    events.sort(key=lambda e: (e.ts, _tie_priority.get(e.event_type, 1)))
     return events
