@@ -8,4 +8,5 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(simulation
     src/main.cpp
     src/Simulation.cpp
+    src/Output.cpp
 )

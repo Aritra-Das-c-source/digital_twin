@@ -2,8 +2,10 @@
 
 #include <iostream>
 
-Simulation::Simulation() {
+Simulation::Simulation() : output("output/run_001")
+{
     initializeFactory();
+    output.writeStations(stations);
 }
 
 void Simulation::initializeFactory() {
@@ -19,7 +21,7 @@ void Simulation::run(Time until) {
     tryStartProcessing(stations[0]);
 
     while (!events.empty()) {
-        Event event = events.top();
+        SimEvent event = events.top();
         events.pop();
 
         if (event.timestamp > until) break;
@@ -29,20 +31,22 @@ void Simulation::run(Time until) {
     }
 }
 
-void Simulation::scheduleEvent(const Event& event) {
+void Simulation::scheduleEvent(const SimEvent& event) {
     events.push(event);
 }
 
-void Simulation::handleEvent(const Event& event) {
+void Simulation::handleEvent(const SimEvent& event) {
     switch (event.type) {
-        case EventType::PROCESSING_COMPLETE:
+        case SimEventType::PROCESSING_COMPLETE:
             handleProcessingComplete(event);
             break;
     }
 }
 
 UnitId Simulation::createUnit() {
-    return nextUnitId++;
+    UnitId id = nextUnitId++;
+    output.writeUnit(id, currentTime);
+    return id;
 }
 
 void Simulation::tryStartProcessing(Station& station) {
@@ -64,31 +68,43 @@ void Simulation::tryStartProcessing(Station& station) {
         station.buffer.pop();
     }
 
+    StationState previousState = station.state;
+
     station.currentUnit = unitId;
     station.state = StationState::PROCESSING;
 
-    std::cout
-        << "[t=" << currentTime << "] "
-        << "Station " << station.id
-        << " starts Unit " << unitId
-        << '\n';
+    output.writeStationEvent({
+        currentTime,
+        StationEventType::PROCESSING_STARTED,
+        station.id,
+        unitId,
+        station.buffer.size(),
+        previousState,
+        StationState::PROCESSING,
+        station.cycleTime
+    });
 
     scheduleEvent({
         currentTime + station.cycleTime,
-        EventType::PROCESSING_COMPLETE,
+        SimEventType::PROCESSING_COMPLETE,
         station.id,
         unitId
     });
 }
 
-void Simulation::handleProcessingComplete(const Event& event) {
+void Simulation::handleProcessingComplete(const SimEvent& event) {
     Station& station = stations[event.stationId];
 
-    std::cout
-        << "[t=" << currentTime << "] "
-        << "Station " << station.id
-        << " completes Unit " << event.unitId
-        << '\n';
+    output.writeStationEvent({
+        currentTime,
+        StationEventType::PROCESSING_COMPLETED,
+        station.id,
+        event.unitId,
+        station.buffer.size(),
+        StationState::PROCESSING,
+        std::nullopt,
+        station.cycleTime
+    });
 
     station.currentUnit.reset();
 
@@ -100,11 +116,16 @@ void Simulation::handleProcessingComplete(const Event& event) {
     Station& nextStation = stations[station.id + 1];
     nextStation.buffer.push(event.unitId);
 
-    std::cout
-        << "[t=" << currentTime << "] "
-        << "Unit " << event.unitId
-        << " moves to Station " << nextStation.id
-        << '\n';
+    output.writeStationEvent({
+        currentTime,
+        StationEventType::UNIT_ARRIVED,
+        nextStation.id,
+        event.unitId,
+        nextStation.buffer.size(),
+        std::nullopt,
+        std::nullopt,
+        std::nullopt
+    });
 
     tryStartProcessing(nextStation);
     station.state = StationState::IDLE;

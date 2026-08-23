@@ -2,13 +2,13 @@
 
 #include "Station.hpp"
 
-enum class EventType {
+enum class SimEventType {
     PROCESSING_COMPLETE
 };
 
-struct Event {
+struct SimEvent {
     Time timestamp;
-    EventType type;
+    SimEventType type;
     StationId stationId;
     UnitId unitId;
 };

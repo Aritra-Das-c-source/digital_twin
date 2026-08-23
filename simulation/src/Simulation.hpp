@@ -2,12 +2,13 @@
 
 #include "Event.hpp"
 #include "Station.hpp"
+#include "Output.hpp"
 
 #include <queue>
 #include <vector>
 
 struct EventCompare {
-    bool operator()(const Event& a, const Event& b) const {
+    bool operator()(const SimEvent& a, const SimEvent& b) const {
         return a.timestamp > b.timestamp;
     }
 };
@@ -21,12 +22,13 @@ private:
     Time currentTime = 0;
     UnitId nextUnitId = 1;
     std::vector<Station> stations;
-    std::priority_queue<Event, std::vector<Event>, EventCompare> events;
+    std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> events;
+    OutputWriter output;
 
     void initializeFactory();
-    void scheduleEvent(const Event& event);
-    void handleEvent(const Event& event);
-    void handleProcessingComplete(const Event& event);
+    void scheduleEvent(const SimEvent& event);
+    void handleEvent(const SimEvent& event);
+    void handleProcessingComplete(const SimEvent& event);
     void tryStartProcessing(Station& station);
     UnitId createUnit();
 };
