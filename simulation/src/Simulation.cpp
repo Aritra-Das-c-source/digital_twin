@@ -1,8 +1,9 @@
 #include "Simulation.hpp"
 
 #include <iostream>
+#include <cmath>
 
-Simulation::Simulation() : output("output/run_001")
+Simulation::Simulation() : rng(42), output("output/run_001")
 {
     initializeFactory();
     output.writeStations(stations);
@@ -10,11 +11,42 @@ Simulation::Simulation() : output("output/run_001")
 
 void Simulation::initializeFactory() {
     stations = {
-        {0, 10, true, false, StationState::IDLE, 3},
-        {1, 20, false, false, StationState::IDLE, 3},
-        {2, 15, false, false, StationState::IDLE, 2},
-        {3, 0, false, true, StationState::IDLE, 1}
+        {0, 10, 0.3, true,  false, StationState::IDLE, 0},
+        {1, 20, 0.1, false, false, StationState::IDLE, 3},
+        {2, 15, 0.2, false, false, StationState::IDLE, 3},
+        {3, 0,  0.1, false, true,  StationState::IDLE, 0}
     };
+}
+
+Time Simulation::sampleCycleTime(const Station& station) {
+    if (station.meanCycleTime == 0) {
+        return 0;
+    }
+
+    if (station.cycleTimeCV == 0.0) {
+        return station.meanCycleTime;
+    }
+
+    double cv = station.cycleTimeCV;
+
+    double sigma = std::sqrt(
+        std::log(1.0 + cv * cv)
+    );
+
+    double mu =
+        std::log(
+            static_cast<double>(station.meanCycleTime)
+        )
+        - (sigma * sigma) / 2.0;
+
+    std::lognormal_distribution<double> distribution(mu, sigma);
+
+    double sampled = distribution(rng);
+
+    return std::max<Time>(
+        1,
+        static_cast<Time>(std::round(sampled))
+    );
 }
 
 bool Simulation::canAcceptUnit(const Station& station) const {
@@ -105,6 +137,7 @@ void Simulation::tryStartProcessing(Station& station) {
     StationState previousState = station.state;
 
     station.currentUnit = unitId;
+    station.currentCycleTime = sampleCycleTime(station);
     station.state = StationState::PROCESSING;
 
     output.writeStationEvent({
@@ -115,11 +148,11 @@ void Simulation::tryStartProcessing(Station& station) {
         station.buffer.size(),
         previousState,
         StationState::PROCESSING,
-        station.cycleTime
+        station.currentCycleTime
     });
 
     scheduleEvent({
-        currentTime + station.cycleTime,
+        currentTime + station.currentCycleTime,
         SimEventType::PROCESSING_COMPLETE,
         station.id,
         unitId
@@ -137,11 +170,12 @@ void Simulation::handleProcessingComplete(const SimEvent& event) {
         station.buffer.size(),
         StationState::PROCESSING,
         std::nullopt,
-        station.cycleTime
+        station.currentCycleTime
     });
 
     if (station.isSink) {
         station.currentUnit.reset();
+        station.currentCycleTime = 0;
         station.state = StationState::IDLE;
         tryStartProcessing(station);
         return;
@@ -151,6 +185,7 @@ void Simulation::handleProcessingComplete(const SimEvent& event) {
 
     if (canAcceptUnit(nextStation)) {
         station.currentUnit.reset();
+        station.currentCycleTime = 0;
         nextStation.buffer.push(event.unitId);
 
         output.writeStationEvent({

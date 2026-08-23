@@ -19,7 +19,8 @@ enum class StationState {
 
 struct Station {
     StationId id;
-    Time cycleTime;
+    Time meanCycleTime;
+    double cycleTimeCV = 0.0;
 
     bool isSource = false;
     bool isSink = false;
@@ -28,4 +29,5 @@ struct Station {
     std::size_t bufferCapacity;
     std::queue<UnitId> buffer;
     std::optional<UnitId> currentUnit;
+    Time currentCycleTime = 0;
 };

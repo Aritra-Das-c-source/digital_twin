@@ -94,7 +94,7 @@ void OutputWriter::writeStations(const std::vector<Station>& stations)
             << "S" << station.id << ','
             << "Station_" << station.id << ','
             << "AUTOMATED,"
-            << station.cycleTime << ','
+            << station.currentCycleTime << ','
             << 0 << ','
             << station.bufferCapacity << ','
             << "NONE\n";

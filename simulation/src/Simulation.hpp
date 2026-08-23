@@ -6,6 +6,7 @@
 
 #include <queue>
 #include <vector>
+#include <random>
 
 struct EventCompare {
     bool operator()(const SimEvent& a, const SimEvent& b) const {
@@ -21,11 +22,13 @@ public:
 private:
     Time currentTime = 0;
     UnitId nextUnitId = 1;
+    std::mt19937 rng;
     std::vector<Station> stations;
     std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> events;
     OutputWriter output;
 
     void initializeFactory();
+    Time sampleCycleTime(const Station& station);
     bool canAcceptUnit(const Station& station) const;
     void tryUnblockUpstream(Station& station);
     void scheduleEvent(const SimEvent& event);
