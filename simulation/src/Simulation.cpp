@@ -3,7 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
-Simulation::Simulation() : rng(42), checkpointRng(4242), output("output/run_001")
+Simulation::Simulation()
+    : rng(42), sensorRng(202), checkpointRng(4242), output("output/run_001")
 {
     initializeFactory();
     initializeCheckpointConfig();
@@ -40,7 +41,17 @@ void Simulation::initializeFactory() {
             i == 0 ? 0U : (manual ? 2U : 4U)
         });
     }
-    stationWear.assign(stations.size(), 0.0);
+    degradation.assign(stations.size(), {});
+    sensorStates.assign(stations.size(), {});
+
+    // These profiles are hidden scenario configuration. Analytics can only
+    // observe their consequences through performance and measurement data.
+    degradation[6].scenario = DegradationScenario::GRADUAL;
+    degradation[16].scenario = DegradationScenario::ACCELERATING; // S17
+    degradation[23].scenario = DegradationScenario::STEP;
+    degradation[28].scenario = DegradationScenario::INTERMITTENT;
+    degradation[33].scenario = DegradationScenario::SEVERE;
+    degradation[33].level = 0.12;
 }
 
 void Simulation::initializeCheckpointConfig() {
@@ -57,11 +68,19 @@ Time Simulation::sampleCycleTime(const Station& station) {
         return 0;
     }
 
-    if (station.cycleTimeCV == 0.0) {
-        return station.meanCycleTime;
-    }
+    const DegradationState& state = degradation[station.id];
+    const double severity = performanceSeverity(station);
 
-    double cv = station.cycleTimeCV;
+    // Low degradation is mostly invisible in throughput. As degradation
+    // worsens, both the expected cycle time and its variability rise; rare
+    // long cycles model non-linear operational symptoms rather than a direct
+    // wear-to-cycle-time conversion.
+    double meanMultiplier = 1.0 + 0.45 * severity * severity;
+    if (state.intermittentFaultActive) meanMultiplier += 0.12;
+    if (state.scenario == DegradationScenario::SEVERE) meanMultiplier += 0.08 * severity;
+    const double effectiveMean = station.meanCycleTime * meanMultiplier;
+    const double cv = station.cycleTimeCV *
+        (1.0 + 1.4 * severity + (state.intermittentFaultActive ? 0.55 : 0.0));
 
     double sigma = std::sqrt(
         std::log(1.0 + cv * cv)
@@ -69,13 +88,21 @@ Time Simulation::sampleCycleTime(const Station& station) {
 
     double mu =
         std::log(
-            static_cast<double>(station.meanCycleTime)
+            effectiveMean
         )
         - (sigma * sigma) / 2.0;
 
     std::lognormal_distribution<double> distribution(mu, sigma);
 
     double sampled = distribution(rng);
+
+    const double outlierProbability = 0.06 * severity * severity +
+        (state.intermittentFaultActive ? 0.14 : 0.0);
+    std::bernoulli_distribution longCycle(outlierProbability);
+    if (longCycle(rng)) {
+        std::uniform_real_distribution<double> outlierFactor(1.25, 2.10);
+        sampled *= outlierFactor(rng);
+    }
 
     return std::max<Time>(
         1,
@@ -166,6 +193,59 @@ UnitId Simulation::createUnit() {
     return id;
 }
 
+void Simulation::advanceDegradation(const Station& station) {
+    DegradationState& state = degradation[station.id];
+    ++state.completedCycles;
+    std::normal_distribution<double> variation(0.0, 0.00004);
+    double increment = 0.00002;
+
+    switch (state.scenario) {
+        case DegradationScenario::HEALTHY:
+            increment = 0.00002;
+            state.intermittentFaultActive = false;
+            break;
+        case DegradationScenario::GRADUAL:
+            increment = 0.00022;
+            break;
+        case DegradationScenario::ACCELERATING:
+            increment = 0.00007 + std::max<std::int64_t>(0,
+                static_cast<std::int64_t>(state.completedCycles) - 70) * 0.000007;
+            break;
+        case DegradationScenario::STEP:
+            increment = 0.00010;
+            if (state.completedCycles >= 150) {
+                state.level = std::max(state.level, 0.42);
+                increment = 0.00032;
+            }
+            break;
+        case DegradationScenario::INTERMITTENT: {
+            increment = 0.00010;
+            std::bernoulli_distribution faultOccurs(0.06 + 0.12 * state.level);
+            state.intermittentFaultActive = faultOccurs(rng);
+            break;
+        }
+        case DegradationScenario::SEVERE:
+            increment = 0.00085;
+            break;
+    }
+
+    state.level = std::clamp(state.level + increment + variation(rng), 0.0, 1.0);
+}
+
+double Simulation::performanceSeverity(const Station& station) const {
+    const DegradationState& state = degradation[station.id];
+    const double onset = std::clamp((state.level - 0.10) / 0.70, 0.0, 1.0);
+    return onset * onset * (3.0 - 2.0 * onset); // smooth onset, not linear wear
+}
+
+Simulation::PhysicalActivity Simulation::physicalActivity(const Station& station) const {
+    if (station.state == StationState::PROCESSING) return PhysicalActivity::PROCESSING_LOAD;
+    if (station.state == StationState::BLOCKED && station.currentUnit.has_value()) {
+        return PhysicalActivity::HOLDING_UNIT;
+    }
+    return PhysicalActivity::STANDBY;
+}
+
 void Simulation::emitObservableData(const Station& station, UnitId unitId) {
     const bool defective = latentDefects[unitId];
     if (station.archetype == "MANUAL") {
@@ -187,31 +267,62 @@ Time Simulation::sensorSamplingInterval(const Station& station) const {
     return station.sensorCoverage == "HIGH" ? 10'000 : 30'000;
 }
 
+Time Simulation::nextSensorSamplingInterval(const Station& station) {
+    const Time nominal = sensorSamplingInterval(station);
+    const Time jitterBound = station.sensorCoverage == "HIGH" ? 1'200 : 3'500;
+    std::uniform_int_distribution<Time> jitter(-jitterBound, jitterBound);
+    return std::max<Time>(1'000, nominal + jitter(sensorRng));
+}
+
 void Simulation::emitSensorSample(const Station& station) {
-    const double wear = stationWear[station.id];
-    const bool processing = station.state == StationState::PROCESSING;
-    const bool blocked = station.state == StationState::BLOCKED;
-    const bool starved = station.state == StationState::STARVED;
+    const DegradationState& degradationState = degradation[station.id];
+    const double severity = performanceSeverity(station);
+    const double sensorDrift = 0.25 * degradationState.level + 0.75 * severity;
+    const PhysicalActivity activity = physicalActivity(station);
+    const bool processing = activity == PhysicalActivity::PROCESSING_LOAD;
     const bool defectiveUnit = processing && station.currentUnit.has_value() &&
         latentDefects[*station.currentUnit];
-    std::normal_distribution<double> noise(0.0, 0.05);
 
-    const double vibrationBaseline = processing ? 1.15 : (blocked ? 0.52 : 0.18);
-    const double temperatureBaseline = processing ? 61.0 : (blocked ? 48.0 : 39.0);
-    const double currentBaseline = processing ? 14.5 : (starved ? 1.0 : 2.2);
+    const double activityVibration = processing ? 1.15 :
+        (activity == PhysicalActivity::HOLDING_UNIT ? 0.48 : 0.18);
+    const double activityTemperature = processing ? 61.0 :
+        (activity == PhysicalActivity::HOLDING_UNIT ? 45.0 : 39.0);
+    const double activityCurrent = processing ? 14.5 :
+        (activity == PhysicalActivity::HOLDING_UNIT ? 4.5 : 2.2);
+    const double intermittentEffect = degradationState.intermittentFaultActive ? 0.35 : 0.0;
+
+    SensorState& sensor = sensorStates[station.id];
+    auto respond = [this](double current, double target, double responseRate,
+                          double noiseStd) {
+        std::normal_distribution<double> noise(0.0, noiseStd);
+        return std::max(0.0, current + responseRate * (target - current) + noise(sensorRng));
+    };
+
+    sensor.vibration = respond(sensor.vibration,
+        activityVibration + sensorDrift * 1.6 + intermittentEffect +
+            (defectiveUnit ? 0.18 : 0.0),
+        0.65, 0.035);
+    sensor.temperature = respond(sensor.temperature,
+        activityTemperature + sensorDrift * 13.0,
+        0.12, 0.16);
+    sensor.current = respond(sensor.current,
+        activityCurrent + sensorDrift * 1.3 + intermittentEffect,
+        0.85, 0.12);
 
     output.writeSensorReading(currentTime, station.id, "VIBRATION",
-        vibrationBaseline + wear * 1.8 + (defectiveUnit ? 0.18 : 0.0) + noise(rng), "g");
+        sensor.vibration, "g");
     output.writeSensorReading(currentTime, station.id, "TEMPERATURE",
-        temperatureBaseline + wear * 13.0 + noise(rng) * 4.0, "C");
+        sensor.temperature, "C");
 
     if (station.sensorCoverage == "HIGH") {
         output.writeSensorReading(currentTime, station.id, "CURRENT",
-            currentBaseline + wear * 1.2 + noise(rng) * 2.0, "A");
+            sensor.current, "A");
         if (processing) {
+            sensor.torque = respond(sensor.torque,
+                42.0 - sensorDrift * 3.5 + (defectiveUnit ? -1.5 : 0.0),
+                0.75, 0.22);
             output.writeSensorReading(currentTime, station.id, "TORQUE",
-                42.0 - wear * 3.5 + (defectiveUnit ? -1.5 : 0.0) + noise(rng) * 3.0,
-                "Nm");
+                sensor.torque, "Nm");
         }
     }
 }
@@ -220,7 +331,7 @@ void Simulation::handleSensorSample(const SimEvent& event) {
     const Station& station = stations[event.stationId];
     emitSensorSample(station);
     scheduleEvent({
-        currentTime + sensorSamplingInterval(station),
+        currentTime + nextSensorSamplingInterval(station),
         SimEventType::SENSOR_SAMPLE,
         station.id,
         0
@@ -320,9 +431,12 @@ void Simulation::flushCheckpointEvents(Time until) {
 
 void Simulation::handleProcessingComplete(const SimEvent& event) {
     Station& station = stations[event.stationId];
-    stationWear[station.id] = std::min(1.0, stationWear[station.id] + 0.002);
+    advanceDegradation(station);
     if (station.id >= 3 && station.id <= 15 && !latentDefects[event.unitId]) {
-        std::bernoulli_distribution introduced(0.002 + stationWear[station.id] * 0.012);
+        const double severity = performanceSeverity(station);
+        const bool intermittent = degradation[station.id].intermittentFaultActive;
+        std::bernoulli_distribution introduced(0.002 + severity * 0.020 +
+            (intermittent ? 0.008 : 0.0));
         latentDefects[event.unitId] = introduced(rng);
     }
 
