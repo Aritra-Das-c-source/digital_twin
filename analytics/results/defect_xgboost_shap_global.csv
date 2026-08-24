@@ -1,0 +1,11 @@
+feature_xgb_a,mean_abs_shap_xgb_a,feature_xgb_d,mean_abs_shap_xgb_d
+torque_mean,0.8857614,torque_std,0.55397856
+torque_std,0.8827115,vibration_std,0.46174863
+vibration_std,0.43439943,current_std,0.22233088
+current_std,0.35877192,manual_fail_count,0.16208252
+current_mean,0.29788584,mean_queue_length,0.16118842
+torque_max,0.2909112,temperature_std,0.16016567
+vibration_max,0.21445501,min_cycle_time,0.105666205
+max_cycle_time,0.20811279,max_cycle_time,0.104293875
+total_cycle_time,0.1922784,total_starved_events,0.094682746
+vibration_mean,0.18221812,std_cycle_time,0.07773769

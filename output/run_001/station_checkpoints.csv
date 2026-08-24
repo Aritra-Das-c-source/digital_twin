@@ -1,0 +1,11 @@
+station_id,checkpoint_id,checkpoint_type,nominal_progress_fraction,read_reliability,false_positive_rate
+S07,CP1,RFID,0.5,0.88,0.02
+S07,CP2,POWER_DRAW,0.75,0.85,0.02
+S14,CP1,RFID,0.5,0.88,0.02
+S14,CP2,POWER_DRAW,0.75,0.85,0.02
+S21,CP1,RFID,0.5,0.88,0.02
+S21,CP2,POWER_DRAW,0.75,0.85,0.02
+S28,CP1,RFID,0.5,0.88,0.02
+S28,CP2,POWER_DRAW,0.75,0.85,0.02
+S35,CP1,RFID,0.5,0.88,0.02
+S35,CP2,POWER_DRAW,0.75,0.85,0.02
