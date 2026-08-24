@@ -35,3 +35,12 @@ struct Station {
     std::optional<UnitId> currentUnit;
     Time currentCycleTime = 0;
 };
+
+struct CheckpointDefinition {
+    StationId stationId;
+    std::string checkpointId;
+    std::string checkpointType;
+    double nominalProgressFraction;
+    double readReliability;
+    double falsePositiveRate;
+};

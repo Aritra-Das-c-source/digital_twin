@@ -18,6 +18,10 @@ public:
         const std::vector<Station>& stations
     );
 
+    void writeStationCheckpoints(
+        const std::vector<CheckpointDefinition>& checkpoints
+    );
+
     void writeUnit(
         UnitId unitId,
         Time createdAt
@@ -25,6 +29,11 @@ public:
 
     void writeStationEvent(
         const StationEvent& event
+    );
+
+    void writeCheckpointEvent(
+        Time timestamp, const std::string& eventType, StationId stationId,
+        UnitId unitId, const std::string& checkpointId
     );
 
     void writeSensorReading(
@@ -56,6 +65,8 @@ private:
     std::ofstream sensorReadingsFile;
     std::ofstream manualChecksFile;
     std::ofstream inspectionResultsFile;
+    std::ofstream checkpointEventsFile;
 
     std::uint64_t nextEventId = 1;
+    std::uint64_t nextCheckpointEventId = 1;
 };

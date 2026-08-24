@@ -277,14 +277,18 @@ def load_all_dark_zone_events(
     station_events_csv: str,
     units_csv: str,
     manual_checks_csv: Optional[str] = None,
+    checkpoint_events_csv: Optional[str] = None,
+    station_checkpoints_csv: Optional[str] = None,
     dark_zone_station_ids: Optional[set] = None,
+    validate_checkpoint_windows: bool = True,
 ) -> list[DarkZoneEvent]:
     """
-    Combines entry/exit events (station_events.csv) with Layer 5 events
-    (manual_checks.csv, if provided) into a single chronologically sorted
-    stream ready for orchestrator.route_event(). This is the function
-    run_pipeline.py should call — it's the one entry point that assembles
-    the full event stream for the dark-zone stations.
+    Combines entry/exit events (station_events.csv), Layer 5 events
+    (manual_checks.csv), and Layer 3/4 events (checkpoint_events.csv, needs
+    station_checkpoints.csv for progress-fraction lookup) into a single
+    chronologically sorted stream ready for orchestrator.route_event().
+    This is the function run_pipeline.py should call — it's the one entry
+    point that assembles the full event stream for the dark-zone stations.
     """
     events = load_events_from_csv(station_events_csv, units_csv)
 
@@ -302,6 +306,18 @@ def load_all_dark_zone_events(
         )
         events.extend(andon_events)
 
+    if checkpoint_events_csv:
+        if not station_checkpoints_csv:
+            raise ValueError(
+                "checkpoint_events_csv was given but station_checkpoints_csv was not — "
+                "the progress-fraction lookup needs both files together."
+            )
+        rfid_power_events = load_checkpoint_events(
+            checkpoint_events_csv, station_checkpoints_csv, units_csv, dark_zone_station_ids,
+            station_events_csv=station_events_csv if validate_checkpoint_windows else None,
+        )
+        events.extend(rfid_power_events)
+
     # Sort by timestamp, with a tie-break priority: when two events share the
     # exact same ts (common here — the VISUAL_ALIGNMENT check fires at the
     # same instant as PROCESSING_COMPLETED), evidence/checkpoint events MUST
@@ -318,3 +334,136 @@ def load_all_dark_zone_events(
     }
     events.sort(key=lambda e: (e.ts, _tie_priority.get(e.event_type, 1)))
     return events
+
+
+def load_checkpoint_progress_map(station_checkpoints_csv: str) -> dict[tuple[str, str], float]:
+    """
+    Reads station_checkpoints.csv (station_id, checkpoint_id, checkpoint_type,
+    nominal_progress_fraction, read_reliability, false_positive_rate) and
+    returns a lookup: (station_id, checkpoint_id) -> nominal_progress_fraction.
+
+    read_reliability / false_positive_rate aren't used here — they describe
+    the DATA's generation process (how the simulator decided whether to emit
+    an event), not something the tracking pipeline needs to consume. The
+    pipeline finds out about unreliability/false-positives empirically, from
+    which events actually show up and get gated — that's the whole point of
+    the Layer 3 gating logic already in orchestrator.py.
+    """
+    df = pd.read_csv(station_checkpoints_csv)
+    return {
+        (row.station_id, row.checkpoint_id): row.nominal_progress_fraction
+        for row in df.itertuples(index=False)
+    }
+
+
+def load_checkpoint_events(
+    checkpoint_events_csv: str,
+    station_checkpoints_csv: str,
+    units_csv: str,
+    dark_zone_station_ids: Optional[set] = None,
+    station_events_csv: Optional[str] = None,
+    drop_out_of_window: bool = True,
+) -> list[DarkZoneEvent]:
+    """
+    Layer 3 (RFID_CHECKPOINT) and Layer 4 (POWER_DRAW) adapter.
+    checkpoint_events.csv columns: event_id, timestamp_ms, event_type,
+    station_id, unit_id, checkpoint_id.
+
+    If station_events_csv is provided, each checkpoint's timestamp is
+    validated against that unit's ACTUAL entry/exit window at that station
+    (from PROCESSING_STARTED/PROCESSING_COMPLETED). Checkpoints landing
+    outside [entry, exit] are a data-generation problem, not sensor noise —
+    a real RFID/CT-clamp reading physically cannot occur before a vehicle
+    arrives or after it's already left. Without this check, such events
+    would silently become "unknown_vehicle" rejections in the orchestrator
+    (the vehicle's tracker is already torn down by the time the mistimed
+    event arrives), which looks identical to a genuinely late/missed read
+    and hides a real upstream bug behind a normal-looking noise category.
+    """
+    ce_df = pd.read_csv(checkpoint_events_csv)
+    units_df = pd.read_csv(units_csv)
+    variant_lookup = dict(zip(units_df["unit_id"], units_df["vehicle_model"]))
+    progress_map = load_checkpoint_progress_map(station_checkpoints_csv)
+
+    if dark_zone_station_ids is not None:
+        before = len(ce_df)
+        ce_df = ce_df[ce_df["station_id"].isin(dark_zone_station_ids)]
+        dropped = before - len(ce_df)
+        if dropped > 0:
+            print(f"(Filtered out {dropped} checkpoint_events.csv row(s) at non-dark-zone stations.)")
+
+    if station_events_csv:
+        sev = pd.read_csv(station_events_csv)
+        starts = sev[sev["event_type"] == "PROCESSING_STARTED"][
+            ["station_id", "unit_id", "timestamp_ms"]
+        ].rename(columns={"timestamp_ms": "_start_ms"})
+        ends = sev[sev["event_type"] == "PROCESSING_COMPLETED"][
+            ["station_id", "unit_id", "timestamp_ms"]
+        ].rename(columns={"timestamp_ms": "_end_ms"})
+        windows = starts.merge(ends, on=["station_id", "unit_id"])
+
+        before = len(ce_df)
+        ce_df = ce_df.merge(windows, on=["station_id", "unit_id"], how="left")
+        no_window = ce_df["_start_ms"].isna().sum()
+        out_of_window = ce_df[
+            (ce_df["timestamp_ms"] < ce_df["_start_ms"]) | (ce_df["timestamp_ms"] > ce_df["_end_ms"])
+        ]
+        n_out = len(out_of_window)
+
+        if n_out > 0:
+            pct = 100 * n_out / max(before - no_window, 1)
+            print(f"⚠ DATA QUALITY ISSUE: {n_out} checkpoint event(s) ({pct:.0f}% of matched rows) "
+                  f"fall OUTSIDE their unit's actual entry/exit window at that station — a real "
+                  f"sensor cannot fire before arrival or after departure. This points at a "
+                  f"checkpoint-timestamp generation bug in checkpoint_events.csv, not sensor noise. "
+                  f"{'Dropping these events.' if drop_out_of_window else 'KEEPING them anyway (drop_out_of_window=False) — expect orchestrator rejections.'}")
+
+        if drop_out_of_window:
+            ce_df = ce_df[
+                ce_df["_start_ms"].notna()
+                & (ce_df["timestamp_ms"] >= ce_df["_start_ms"])
+                & (ce_df["timestamp_ms"] <= ce_df["_end_ms"])
+            ]
+
+    raw_to_event_type = {
+        "RFID_CHECKPOINT": EventType.RFID_CHECKPOINT,
+        "RFID": EventType.RFID_CHECKPOINT,       # accept shorthand seen in station_checkpoints.csv's checkpoint_type
+        "BLE": EventType.RFID_CHECKPOINT,
+        "POWER_DRAW": EventType.POWER_DRAW,
+    }
+
+    events: list[DarkZoneEvent] = []
+    unmapped_progress = 0
+    unmapped_event_type: set = set()
+    for row in ce_df.itertuples(index=False):
+        mapped_type = raw_to_event_type.get(row.event_type)
+        if mapped_type is None:
+            unmapped_event_type.add(row.event_type)
+            continue  # future checkpoint types not yet supported here
+
+        progress = progress_map.get((row.station_id, row.checkpoint_id))
+        if progress is None:
+            unmapped_progress += 1
+            continue  # checkpoint_id not found in station_checkpoints.csv — skip, don't guess
+
+        events.append(DarkZoneEvent(
+            event_type=mapped_type,
+            vehicle_id=row.unit_id,
+            station_id=row.station_id,
+            ts=row.timestamp_ms / 1000.0,
+            variant=variant_lookup.get(row.unit_id),
+            checkpoint_progress=progress,
+            payload={"checkpoint_id": row.checkpoint_id},
+        ))
+
+    if unmapped_progress:
+        print(f"⚠ {unmapped_progress} checkpoint event(s) had no matching row in "
+              f"station_checkpoints.csv — skipped.")
+    if unmapped_event_type:
+        print(f"⚠ {len(ce_df) - len(events) - unmapped_progress} checkpoint event(s) had "
+              f"UNRECOGNIZED event_type value(s) {unmapped_event_type} — skipped. "
+              f"Add them to raw_to_event_type if these are legitimate.")
+
+    return events
+
+

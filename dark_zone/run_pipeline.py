@@ -4,16 +4,22 @@ Dark Zone Tracking Engine — Runner
 THIS is the script you actually run.
 
 Usage:
-    python3 run_pipeline.py <stations.csv> <station_events.csv> <units.csv> [manual_checks.csv]
+    python3 run_pipeline.py \\
+        --stations stations.csv \\
+        --station-events station_events.csv \\
+        --units units.csv \\
+        [--manual-checks manual_checks.csv] \\
+        [--checkpoint-events checkpoint_events.csv --station-checkpoints station_checkpoints.csv]
 
-manual_checks.csv is optional — if given, its VISUAL_ALIGNMENT results are
-ingested as Layer 5 (ANDON_SCAN) evidence. Without it, the pipeline still
-runs fine on Layers 1+2 alone (pure prediction, no mid/end-cycle correction).
+--stations, --station-events, --units are required.
+--manual-checks is optional: Layer 5 (Andon/QR) evidence.
+--checkpoint-events + --station-checkpoints must be given together (or not
+at all): Layer 3 (RFID) + Layer 4 (power-draw) evidence.
 """
 
 from __future__ import annotations
 
-import sys
+import argparse
 import pandas as pd
 
 from dark_zone_tracker import fit_dwell_distribution
@@ -28,6 +34,8 @@ def run(
     station_events_csv: str,
     units_csv: str,
     manual_checks_csv: str = None,
+    checkpoint_events_csv: str = None,
+    station_checkpoints_csv: str = None,
     db_path: str = "dark_zone_state.db",
 ):
     # ---- Step 0: figure out which stations are actually dark zones ----
@@ -44,7 +52,6 @@ def run(
     )
     dwell_models = fit_dwell_distribution(hist_df, dist_name="gamma")
 
-    # Station-level fallback for any (station, variant) combo under threshold
     for station in dz_ids:
         fallback_key = (station, "__ALL__")
         if fallback_key not in dwell_models:
@@ -52,7 +59,6 @@ def run(
             if candidates:
                 dwell_models[fallback_key] = candidates[0]
 
-    # Last-resort global fallback across all dark-zone stations combined
     if ("__GLOBAL__", "__ALL__") not in dwell_models and len(hist_df) > 0:
         global_hist = hist_df.copy()
         global_hist["station_id"] = "__GLOBAL__"
@@ -77,9 +83,13 @@ def run(
     )
     print(f"Recovered {len(orch.active)} in-flight vehicle(s) from previous run.\n")
 
-    # ---- Step 3: load combined event stream (entry/exit + Layer 5 Andon), dark zones only ----
+    # ---- Step 3: load FULL combined event stream (Layers 1/2 boundary + 3/4/5), dark zones only ----
     events = load_all_dark_zone_events(
-        station_events_csv, units_csv, manual_checks_csv, dark_zone_station_ids=dz_ids,
+        station_events_csv, units_csv,
+        manual_checks_csv=manual_checks_csv,
+        checkpoint_events_csv=checkpoint_events_csv,
+        station_checkpoints_csv=station_checkpoints_csv,
+        dark_zone_station_ids=dz_ids,
     )
     print(f"Loaded {len(events)} dark-zone events. Replaying...\n")
 
@@ -93,9 +103,14 @@ def run(
     n_flushed = orch.flush()
     print(f"\nFinal flush: {n_flushed} vehicle state(s) written.")
 
-    # ---- Step 4: summary ----
+    # ---- Step 4: summary — broken down by rejection reason, since Layer 3/4
+    # gating is EXPECTED to reject some events now (that's the point) ----
     print(f"\nDone. {len(orch.active)} vehicle(s) still in-flight at end of file.")
-    print(f"{len(orch.rejected_log)} event(s) rejected/gated (see orch.rejected_log).")
+    print(f"{len(orch.rejected_log)} event(s) rejected/gated total (see orch.rejected_log):")
+    if orch.rejected_log:
+        reasons = pd.Series([r["reason"] for r in orch.rejected_log]).value_counts()
+        for reason, count in reasons.items():
+            print(f"  - {reason}: {count}")
 
     no_dwell_model = [r for r in orch.rejected_log if r["reason"] == "no_dwell_model_available"]
     if no_dwell_model:
@@ -111,10 +126,32 @@ def run(
     return orch
 
 
-if __name__ == "__main__":
-    if len(sys.argv) not in (4, 5):
-        print("Usage: python3 run_pipeline.py stations.csv station_events.csv units.csv [manual_checks.csv]")
-        sys.exit(1)
+def main():
+    parser = argparse.ArgumentParser(description="Dark Zone Tracking Engine runner")
+    parser.add_argument("--stations", required=True, help="stations.csv path")
+    parser.add_argument("--station-events", required=True, help="station_events.csv path")
+    parser.add_argument("--units", required=True, help="units.csv path")
+    parser.add_argument("--manual-checks", default=None, help="manual_checks.csv path (Layer 5, optional)")
+    parser.add_argument("--checkpoint-events", default=None,
+                         help="checkpoint_events.csv path (Layer 3/4, optional — needs --station-checkpoints too)")
+    parser.add_argument("--station-checkpoints", default=None,
+                         help="station_checkpoints.csv path (Layer 3/4, optional — needs --checkpoint-events too)")
+    parser.add_argument("--db-path", default="dark_zone_state.db", help="SQLite persistence file path")
+    args = parser.parse_args()
 
-    manual_checks_arg = sys.argv[4] if len(sys.argv) == 5 else None
-    run(sys.argv[1], sys.argv[2], sys.argv[3], manual_checks_arg)
+    if bool(args.checkpoint_events) != bool(args.station_checkpoints):
+        parser.error("--checkpoint-events and --station-checkpoints must be given together, or not at all.")
+
+    run(
+        stations_csv=args.stations,
+        station_events_csv=args.station_events,
+        units_csv=args.units,
+        manual_checks_csv=args.manual_checks,
+        checkpoint_events_csv=args.checkpoint_events,
+        station_checkpoints_csv=args.station_checkpoints,
+        db_path=args.db_path,
+    )
+
+
+if __name__ == "__main__":
+    main()

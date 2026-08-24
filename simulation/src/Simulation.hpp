@@ -24,13 +24,17 @@ private:
     Time currentTime = 0;
     UnitId nextUnitId = 1;
     std::mt19937 rng;
+    std::mt19937 checkpointRng;
     std::unordered_map<UnitId, bool> latentDefects;
     std::vector<double> stationWear;
     std::vector<Station> stations;
+    std::vector<CheckpointDefinition> checkpoints;
     std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> events;
+    std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> checkpointEvents;
     OutputWriter output;
 
     void initializeFactory();
+    void initializeCheckpointConfig();
     Time sampleCycleTime(const Station& station);
     bool canAcceptUnit(const Station& station) const;
     void tryUnblockUpstream(Station& station);
@@ -43,4 +47,6 @@ private:
     void emitObservableData(const Station& station, UnitId unitId);
     void emitSensorSample(const Station& station);
     Time sensorSamplingInterval(const Station& station) const;
+    void scheduleCheckpointEvents(const Station& station, UnitId unitId);
+    void flushCheckpointEvents(Time until);
 };

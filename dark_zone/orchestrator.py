@@ -337,6 +337,31 @@ class DarkZoneOrchestrator:
             self.persistence.log_rejected_event(vehicle_id, reason, ev.__dict__)
 
     def _spawn(self, ev: DarkZoneEvent) -> None:
+        # Physical-consistency guard: a real vehicle cannot be at two
+        # stations simultaneously. A STATION_ENTRY for a vehicle that's
+        # already active elsewhere means either (a) a rework/revisit loop
+        # sent it back through a dark-zone station, or (b) an out-of-order/
+        # data-quality problem — the same class of issue already found
+        # twice in this project's real data. Previously this silently
+        # overwrote the old tracker (self.active keyed by vehicle_id alone)
+        # with no warning; the corruption only surfaced later as a
+        # confusing, disconnected "unknown_vehicle" rejection when the
+        # orphaned station's exit event arrived. Now it's caught and
+        # logged loudly at the moment it actually happens, matching how
+        # every other data anomaly in this pipeline is handled.
+        if ev.vehicle_id in self.active:
+            prior_station = self.meta[ev.vehicle_id]["station"]
+            if prior_station != ev.station_id:
+                self._log_rejected(
+                    ev.vehicle_id, "vehicle_already_active_at_another_station", ev
+                )
+                print(f"⚠ DATA ANOMALY: {ev.vehicle_id} entered {ev.station_id} while still "
+                      f"active at {prior_station} (never received a STATION_EXIT there). "
+                      f"Tearing down the stale {prior_station} tracker and proceeding with "
+                      f"the new entry — but this points at a real ordering issue upstream, "
+                      f"not sensor noise.")
+                self._teardown(ev.vehicle_id)
+
         key = (ev.station_id, ev.variant)
         dist = self.dwell_models.get(key)
         if dist is None:
@@ -400,6 +425,7 @@ class DarkZoneOrchestrator:
             "variant": self.meta[vehicle_id]["variant"],
             "progress_mean": round(est["progress_mean"], 4),
             "progress_std": round(est["progress_std"], 4),
+            "eta_std": round(est["eta_std"], 2),
             "render_confidence": round(est["render_confidence"], 3),
             "eta_seconds": round(est["eta_s"], 1),
             "elapsed_seconds": round(est["elapsed_s"], 1),
