@@ -1,1 +1,4 @@
 /simulation/build
+dark_zone/*.db
+dark_zone/historical_dwell.csv
+__pycache__/

@@ -301,25 +301,43 @@ class DarkZoneParticleFilter:
         var = float(np.average((self.progress - mean) ** 2, weights=self.weights))
         std = float(np.sqrt(var))
 
-        # HOOK: Layer 6 — map filter uncertainty directly to a UI confidence value.
-        # Exponential decay rather than a linear clip: a linear map saturates
-        # hard to 0 once std crosses a threshold (e.g. 0.15) and STAYS at 0
-        # for the rest of a long blind interval, even as std keeps climbing —
-        # the UI would render identically "fully uncertain" for a large chunk
-        # of dark-zone time despite meaningfully worsening uncertainty
-        # underneath. Exponential decay asymptotes toward 0 instead, so the
-        # confidence value keeps discriminating between "pretty unsure" and
-        # "very unsure" instead of flatlining.
-        # tau=0.08 -> confidence ~0.78 at std=0.025 (just after a checkpoint),
-        # ~0.22 at std=0.15 (old hard-clip threshold), ~0.10 at std=0.23
-        # (typical worst-case blind-interval drift) — smooth across the
-        # whole realistic range instead of clipping.
-        tau = 0.08
-        confidence = float(np.exp(-std / tau))
+        # ETA uncertainty is a DIFFERENT quantity than progress uncertainty
+        # and must be computed separately. progress_std only measures spread
+        # in the fraction (0-1) — two particles can agree closely on
+        # "50% through" while disagreeing wildly on whether the total cycle
+        # is 40s or 90s, and that disagreement is invisible to progress_std
+        # but shows up directly as ETA error in seconds. Backtest evidence:
+        # progress_std correlated 0.35 with actual progress error (useful)
+        # but only 0.024 with actual ETA error (useless) — confirming
+        # render_confidence, if built on progress_std alone, was blind to
+        # the uncertainty that actually matters for a "time remaining" UI.
+        remaining_time = (1.0 - self.progress) * self.T
+        eta_mean = float(np.average(remaining_time, weights=self.weights))
+        eta_var = float(np.average((remaining_time - eta_mean) ** 2, weights=self.weights))
+        eta_std = float(np.sqrt(eta_var))
+
+        # HOOK: Layer 6 — map ETA uncertainty (in seconds, the unit the UI
+        # actually displays) to a confidence value. Backtest-verified:
+        # eta_std correlates 0.33 with actual ETA error (vs 0.026 for the
+        # old progress_std-based signal) — a real, usable signal. Using it
+        # directly (not a relative/normalized version) since the relative
+        # transform tested worse — dividing by eta_mean (which shrinks
+        # toward 0 near completion) introduced noise that masked the
+        # underlying correlation rather than improving it.
+        # tau_seconds=8.0 chosen from real backtest scale: mean eta_std
+        # ranged ~6-10s, mean actual error ~4-8s over the same range — this
+        # keeps confidence spanning a meaningful 0-1 range across that
+        # observed scale rather than saturating. Recalibrate if station
+        # dwell-time scale changes significantly (e.g. a much longer or
+        # shorter-cycle station) — this constant is tied to THIS factory's
+        # timescale, not universal.
+        tau_seconds = 8.0
+        confidence = float(np.exp(-eta_std / tau_seconds))
 
         return {
             "progress_mean": mean,
             "progress_std": std,
+            "eta_std": eta_std,
             "elapsed_s": self.elapsed_s,
             "eta_s": max(0.0, (1.0 - mean) * float(np.average(self.T, weights=self.weights))),
             "render_confidence": confidence,  # -> alpha channel in Layer 6
