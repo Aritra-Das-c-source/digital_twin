@@ -1,12 +1,14 @@
 #include "Simulation.hpp"
 
-#include <iostream>
+#include <algorithm>
 #include <cmath>
 
-Simulation::Simulation() : rng(42), output("output/run_001")
+Simulation::Simulation() : rng(42), checkpointRng(4242), output("output/run_001")
 {
     initializeFactory();
+    initializeCheckpointConfig();
     output.writeStations(stations);
+    output.writeStationCheckpoints(checkpoints);
 }
 
 void Simulation::initializeFactory() {
@@ -39,6 +41,15 @@ void Simulation::initializeFactory() {
         });
     }
     stationWear.assign(stations.size(), 0.0);
+}
+
+void Simulation::initializeCheckpointConfig() {
+    checkpoints.clear();
+    for (const Station& station : stations) {
+        if (station.archetype != "MANUAL") continue;
+        checkpoints.push_back({station.id, "CP1", "RFID", 0.50, 0.88, 0.02});
+        checkpoints.push_back({station.id, "CP2", "POWER_DRAW", 0.75, 0.85, 0.02});
+    }
 }
 
 Time Simulation::sampleCycleTime(const Station& station) {
@@ -127,6 +138,7 @@ void Simulation::run(Time until) {
         handleEvent(event);
     }
 
+    flushCheckpointEvents(until);
     output.writeRunMetadata("run_001", 42, until, stations.size(), nextUnitId - 1);
 }
 
@@ -252,12 +264,58 @@ void Simulation::tryStartProcessing(Station& station) {
         station.currentCycleTime
     });
 
+    scheduleCheckpointEvents(station, unitId);
+
     scheduleEvent({
         currentTime + station.currentCycleTime,
         SimEventType::PROCESSING_COMPLETE,
         station.id,
         unitId
     });
+}
+
+void Simulation::scheduleCheckpointEvents(const Station& station, UnitId unitId) {
+    if (station.archetype != "MANUAL") return;
+
+    std::uniform_int_distribution<Time> jitter(-5'000, 5'000);
+    const Time completionTime = currentTime + station.currentCycleTime;
+    for (std::size_t index = 0; index < checkpoints.size(); ++index) {
+        const CheckpointDefinition& checkpoint = checkpoints[index];
+        if (checkpoint.stationId != station.id) continue;
+
+        const Time nominal = currentTime + static_cast<Time>(std::round(
+            checkpoint.nominalProgressFraction * station.currentCycleTime));
+        const Time timestamp = std::clamp(nominal + jitter(checkpointRng), currentTime + 1,
+            completionTime - 1);
+
+        std::bernoulli_distribution readOccurs(checkpoint.readReliability);
+        if (readOccurs(checkpointRng)) {
+            checkpointEvents.push({timestamp, SimEventType::CHECKPOINT_RECORDED,
+                station.id, unitId, index});
+        }
+
+        std::bernoulli_distribution falsePositive(checkpoint.falsePositiveRate);
+        if (unitId > 1 && falsePositive(checkpointRng)) {
+            const UnitId adjacentUnit = station.buffer.empty() ? unitId - 1 :
+                station.buffer.front();
+            checkpointEvents.push({timestamp, SimEventType::CHECKPOINT_RECORDED,
+                station.id, adjacentUnit, index});
+        }
+    }
+}
+
+void Simulation::flushCheckpointEvents(Time until) {
+    while (!checkpointEvents.empty()) {
+        const SimEvent event = checkpointEvents.top();
+        checkpointEvents.pop();
+        if (event.timestamp > until || !event.checkpointIndex.has_value()) continue;
+
+        const CheckpointDefinition& checkpoint = checkpoints[*event.checkpointIndex];
+        const std::string eventType = checkpoint.checkpointType == "RFID" ?
+            "RFID_CHECKPOINT" : "POWER_DRAW";
+        output.writeCheckpointEvent(event.timestamp, eventType, event.stationId,
+            event.unitId, checkpoint.checkpointId);
+    }
 }
 
 void Simulation::handleProcessingComplete(const SimEvent& event) {

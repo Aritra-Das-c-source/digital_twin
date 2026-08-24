@@ -12,9 +12,10 @@ OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
     sensorReadingsFile.open(outputDirectory / "sensor_readings.csv");
     manualChecksFile.open(outputDirectory / "manual_checks.csv");
     inspectionResultsFile.open(outputDirectory / "inspection_results.csv");
+    checkpointEventsFile.open(outputDirectory / "checkpoint_events.csv");
 
     if (!unitsFile || !stationEventsFile || !sensorReadingsFile ||
-        !manualChecksFile || !inspectionResultsFile) {
+        !manualChecksFile || !inspectionResultsFile || !checkpointEventsFile) {
         throw std::runtime_error("Failed to open output files");
     }
 
@@ -39,6 +40,8 @@ OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
     manualChecksFile << "timestamp_ms,station_id,unit_id,check_type,result\n";
     inspectionResultsFile
         << "timestamp_ms,station_id,unit_id,defect_type,severity,result\n";
+    checkpointEventsFile
+        << "event_id,timestamp_ms,event_type,station_id,unit_id,checkpoint_id\n";
 }
 
 namespace {
@@ -97,6 +100,21 @@ std::string toString(StationEventType type) {
     return "";
 }
 
+}
+
+void OutputWriter::writeStationCheckpoints(
+    const std::vector<CheckpointDefinition>& checkpoints)
+{
+    std::ofstream file(outputDirectory / "station_checkpoints.csv");
+    if (!file) throw std::runtime_error("Failed to open station_checkpoints.csv");
+
+    file << "station_id,checkpoint_id,checkpoint_type,nominal_progress_fraction,"
+         << "read_reliability,false_positive_rate\n";
+    for (const CheckpointDefinition& checkpoint : checkpoints) {
+        file << stationKey(checkpoint.stationId) << ',' << checkpoint.checkpointId << ','
+             << checkpoint.checkpointType << ',' << checkpoint.nominalProgressFraction << ','
+             << checkpoint.readReliability << ',' << checkpoint.falsePositiveRate << '\n';
+    }
 }
 
 void OutputWriter::writeStations(const std::vector<Station>& stations)
@@ -177,6 +195,16 @@ void OutputWriter::writeStationEvent(const StationEvent& event)
     }
 
     stationEventsFile << '\n';
+}
+
+void OutputWriter::writeCheckpointEvent(
+    Time timestamp, const std::string& eventType, StationId stationId,
+    UnitId unitId, const std::string& checkpointId)
+{
+    checkpointEventsFile << "CE" << std::setw(6) << std::setfill('0')
+                         << nextCheckpointEventId++ << ',' << timestamp << ','
+                         << eventType << ',' << stationKey(stationId) << ','
+                         << unitKey(unitId) << ',' << checkpointId << '\n';
 }
 
 void OutputWriter::writeSensorReading(
