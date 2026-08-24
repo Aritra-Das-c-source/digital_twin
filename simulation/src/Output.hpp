@@ -33,7 +33,7 @@ public:
 
     void writeCheckpointEvent(
         Time timestamp, const std::string& eventType, StationId stationId,
-        UnitId unitId, const std::string& checkpointId
+        std::optional<UnitId> unitId, const std::string& checkpointId
     );
 
     void writeSensorReading(
@@ -42,7 +42,7 @@ public:
     );
 
     void writeManualCheck(
-        Time timestamp, StationId stationId, UnitId unitId,
+        Time timestamp, StationId stationId, std::optional<UnitId> unitId,
         const std::string& checkType, const std::string& result
     );
 

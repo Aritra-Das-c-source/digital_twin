@@ -43,4 +43,5 @@ struct CheckpointDefinition {
     double nominalProgressFraction;
     double readReliability;
     double falsePositiveRate;
+    bool identifiesUnit = true;
 };

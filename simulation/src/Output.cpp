@@ -34,7 +34,7 @@ OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
         << "queue_length_after,"
         << "previous_state,"
         << "new_state,"
-        << "cycle_time_ms\n";
+        << "cycle_time_ms,dark_zone_id\n";
 
     sensorReadingsFile << "timestamp_ms,station_id,sensor_type,value,unit\n";
     manualChecksFile << "timestamp_ms,station_id,unit_id,check_type,result\n";
@@ -95,6 +95,10 @@ std::string toString(StationEventType type) {
 
         case StationEventType::STATE_CHANGED:
             return "STATE_CHANGED";
+        case StationEventType::DARK_ZONE_ENTERED:
+            return "DARK_ZONE_ENTERED";
+        case StationEventType::DARK_ZONE_EXITED:
+            return "DARK_ZONE_EXITED";
     }
 
     return "";
@@ -194,17 +198,21 @@ void OutputWriter::writeStationEvent(const StationEvent& event)
         stationEventsFile << *event.cycleTime;
     }
 
+    stationEventsFile << ',';
+    if (event.darkZoneId.has_value()) stationEventsFile << *event.darkZoneId;
+
     stationEventsFile << '\n';
 }
 
 void OutputWriter::writeCheckpointEvent(
     Time timestamp, const std::string& eventType, StationId stationId,
-    UnitId unitId, const std::string& checkpointId)
+    std::optional<UnitId> unitId, const std::string& checkpointId)
 {
     checkpointEventsFile << "CE" << std::setw(6) << std::setfill('0')
                          << nextCheckpointEventId++ << ',' << timestamp << ','
-                         << eventType << ',' << stationKey(stationId) << ','
-                         << unitKey(unitId) << ',' << checkpointId << '\n';
+                         << eventType << ',' << stationKey(stationId) << ',';
+    if (unitId) checkpointEventsFile << unitKey(*unitId);
+    checkpointEventsFile << ',' << checkpointId << '\n';
 }
 
 void OutputWriter::writeSensorReading(
@@ -216,11 +224,12 @@ void OutputWriter::writeSensorReading(
 }
 
 void OutputWriter::writeManualCheck(
-    Time timestamp, StationId stationId, UnitId unitId,
+    Time timestamp, StationId stationId, std::optional<UnitId> unitId,
     const std::string& checkType, const std::string& result)
 {
-    manualChecksFile << timestamp << ',' << stationKey(stationId) << ',' << unitKey(unitId)
-                     << ',' << checkType << ',' << result << '\n';
+    manualChecksFile << timestamp << ',' << stationKey(stationId) << ',';
+    if (unitId) manualChecksFile << unitKey(*unitId);
+    manualChecksFile << ',' << checkType << ',' << result << '\n';
 }
 
 void OutputWriter::writeInspectionResult(
@@ -247,5 +256,5 @@ void OutputWriter::writeRunMetadata(
          << "  \"simulation_duration_ms\": " << duration << ",\n"
          << "  \"station_count\": " << stationCount << ",\n"
          << "  \"units_created\": " << unitsCreated << ",\n"
-         << "  \"schema_version\": \"1.0\"\n}\n";
+         << "  \"schema_version\": \"2.0\"\n}\n";
 }
