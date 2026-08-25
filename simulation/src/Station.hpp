@@ -1,24 +1,26 @@
 #pragma once
 
-#include "Unit.hpp"
-
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <queue>
 #include <string>
 
+#include "Unit.hpp"
+
 using StationId = std::uint32_t;
 using Time = std::int64_t;
 
-enum class StationState {
+enum class StationState
+{
     IDLE,
     PROCESSING,
     BLOCKED,
     STARVED
 };
 
-struct Station {
+struct Station
+{
     StationId id;
     std::string name;
     std::string archetype;
@@ -36,7 +38,8 @@ struct Station {
     Time currentCycleTime = 0;
 };
 
-struct CheckpointDefinition {
+struct CheckpointDefinition
+{
     StationId stationId;
     std::string checkpointId;
     std::string checkpointType;

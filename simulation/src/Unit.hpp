@@ -6,13 +6,15 @@
 
 using UnitId = std::uint64_t;
 
-struct UnitDefect {
+struct UnitDefect
+{
     std::string type;
     std::uint32_t introducedAtStation;
     std::int64_t introducedAt;
 };
 
-struct Unit {
+struct Unit
+{
     UnitId id;
     std::string vehicleModel;
     std::string supplierBatch;

@@ -1,63 +1,43 @@
 #pragma once
 
-#include "Station.hpp"
-#include "StationEvent.hpp"
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <vector>
 
-class OutputWriter {
-public:
-    explicit OutputWriter(
-        const std::filesystem::path& outputDirectory
-    );
+#include "Station.hpp"
+#include "StationEvent.hpp"
 
-    void writeStations(
-        const std::vector<Station>& stations
-    );
+class OutputWriter
+{
+   public:
+    explicit OutputWriter(const std::filesystem::path& outputDirectory);
 
-    void writeStationCheckpoints(
-        const std::vector<CheckpointDefinition>& checkpoints
-    );
+    void writeStations(const std::vector<Station>& stations);
 
-    void writeUnit(
-        UnitId unitId,
-        Time createdAt
-    );
+    void writeStationCheckpoints(const std::vector<CheckpointDefinition>& checkpoints);
 
-    void writeStationEvent(
-        const StationEvent& event
-    );
+    void writeUnit(UnitId unitId, Time createdAt);
 
-    void writeCheckpointEvent(
-        Time timestamp, const std::string& eventType, StationId stationId,
-        std::optional<UnitId> unitId, const std::string& checkpointId
-    );
+    void writeStationEvent(const StationEvent& event);
 
-    void writeSensorReading(
-        Time timestamp, StationId stationId, const std::string& sensorType,
-        double value, const std::string& unit
-    );
+    void writeCheckpointEvent(Time timestamp, const std::string& eventType, StationId stationId,
+                              std::optional<UnitId> unitId, const std::string& checkpointId);
 
-    void writeManualCheck(
-        Time timestamp, StationId stationId, std::optional<UnitId> unitId,
-        const std::string& checkType, const std::string& result
-    );
+    void writeSensorReading(Time timestamp, StationId stationId, const std::string& sensorType,
+                            double value, const std::string& unit);
 
-    void writeInspectionResult(
-        Time timestamp, StationId stationId, UnitId unitId,
-        const std::string& defectType, std::optional<int> severity,
-        const std::string& result
-    );
+    void writeManualCheck(Time timestamp, StationId stationId, std::optional<UnitId> unitId,
+                          const std::string& checkType, const std::string& result);
 
-    void writeRunMetadata(
-        const std::string& runId, std::uint32_t randomSeed,
-        Time duration, std::size_t stationCount, UnitId unitsCreated
-    );
+    void writeInspectionResult(Time timestamp, StationId stationId, UnitId unitId,
+                               const std::string& defectType, std::optional<int> severity,
+                               const std::string& result);
 
-private:
+    void writeRunMetadata(const std::string& runId, std::uint32_t randomSeed, Time duration,
+                          std::size_t stationCount, UnitId unitsCreated);
+
+   private:
     std::filesystem::path outputDirectory;
 
     std::ofstream unitsFile;

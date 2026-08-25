@@ -1,34 +1,69 @@
 #pragma once
 
+#include <queue>
+#include <random>
+#include <unordered_map>
+
 #include "Config.hpp"
 #include "Event.hpp"
 #include "ObservationPolicy.hpp"
 #include "Output.hpp"
 
-#include <queue>
-#include <random>
-#include <unordered_map>
-
-struct EventCompare {
-    bool operator()(const SimEvent& a, const SimEvent& b) const { return a.timestamp > b.timestamp; }
+struct EventCompare
+{
+    bool operator()(const SimEvent& a, const SimEvent& b) const
+    {
+        return a.timestamp > b.timestamp;
+    }
 };
 
-class Simulation {
-public:
+class Simulation
+{
+   public:
     Simulation(SimulationConfig config, std::filesystem::path outputDirectory, std::string runId);
     void run();
 
-private:
-    enum class DegradationScenario { HEALTHY, GRADUAL, ACCELERATING, STEP, INTERMITTENT, SEVERE };
-    enum class PhysicalActivity { STANDBY, PROCESSING_LOAD, HOLDING_UNIT };
-    struct DegradationState { DegradationScenario scenario = DegradationScenario::HEALTHY; double level = 0; std::uint64_t completedCycles = 0; bool intermittentFaultActive = false; };
-    struct SensorState { double temperature = 40; double vibration = .18; double current = 2.2; double torque = 42; };
+   private:
+    enum class DegradationScenario
+    {
+        HEALTHY,
+        GRADUAL,
+        ACCELERATING,
+        STEP,
+        INTERMITTENT,
+        SEVERE,
+    };
+
+    enum class PhysicalActivity
+    {
+        STANDBY,
+        PROCESSING_LOAD,
+        HOLDING_UNIT,
+    };
+
+    struct DegradationState
+    {
+        DegradationScenario scenario = DegradationScenario::HEALTHY;
+        double level = 0;
+        std::uint64_t completedCycles = 0;
+        bool intermittentFaultActive = false;
+    };
+
+    struct SensorState
+    {
+        double temperature = 40;
+        double vibration = .18;
+        double current = 2.2;
+        double torque = 42;
+    };
 
     SimulationConfig config;
     std::string runId;
     Time currentTime = 0;
     UnitId nextUnitId = 1;
-    std::mt19937 rng, sensorRng, checkpointRng;
+    std::mt19937 rng;
+    std::mt19937 sensorRng;
+    std::mt19937 checkpointRng;
     std::unordered_map<UnitId, Unit> units;
     std::vector<DegradationState> degradation;
     std::vector<SensorState> sensorStates;

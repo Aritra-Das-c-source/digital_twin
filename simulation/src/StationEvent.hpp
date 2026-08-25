@@ -1,9 +1,11 @@
 #pragma once
 
-#include "Station.hpp"
 #include <optional>
 
-enum class StationEventType {
+#include "Station.hpp"
+
+enum class StationEventType
+{
     UNIT_ARRIVED,
     PROCESSING_STARTED,
     PROCESSING_COMPLETED,
@@ -12,7 +14,8 @@ enum class StationEventType {
     DARK_ZONE_EXITED
 };
 
-struct StationEvent {
+struct StationEvent
+{
     Time timestamp;
     StationEventType type;
     StationId stationId;

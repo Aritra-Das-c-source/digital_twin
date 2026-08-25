@@ -1,14 +1,15 @@
 #pragma once
 
-#include "Station.hpp"
-
-#include <optional>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-struct CheckpointConfig {
+#include "Station.hpp"
+
+struct CheckpointConfig
+{
     StationId stationId;
     std::string id;
     std::string type;
@@ -18,13 +19,15 @@ struct CheckpointConfig {
     bool identifiesUnit;
 };
 
-struct DarkZoneObservability {
+struct DarkZoneObservability
+{
     bool sensorTelemetry = false;
     bool manualChecks = false;
     bool checkpoints = false;
 };
 
-struct DarkZoneConfig {
+struct DarkZoneConfig
+{
     std::string id;
     std::string name;
     StationId startStationId;
@@ -32,13 +35,15 @@ struct DarkZoneConfig {
     DarkZoneObservability observability;
 };
 
-struct DegradationConfig {
+struct DegradationConfig
+{
     StationId stationId;
     std::string scenario;
     double initialLevel = 0.0;
 };
 
-struct DefectEffectConfig {
+struct DefectEffectConfig
+{
     StationId stationId;
     double cycleTimeMultiplier = 1.0;
     double extraCV = 0.0;
@@ -48,7 +53,8 @@ struct DefectEffectConfig {
     int inspectionSeverity = 0;
 };
 
-struct DefectDefinitionConfig {
+struct DefectDefinitionConfig
+{
     std::string type;
     std::vector<StationId> introductionStations;
     double baseProbability;
@@ -56,7 +62,8 @@ struct DefectDefinitionConfig {
     std::vector<DefectEffectConfig> effects;
 };
 
-struct SimulationConfig {
+struct SimulationConfig
+{
     std::uint32_t randomSeed = 42;
     Time duration = 28'800'000;
     std::vector<Station> stations;

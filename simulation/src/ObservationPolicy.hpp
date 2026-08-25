@@ -2,8 +2,9 @@
 
 #include "Config.hpp"
 
-class ObservationPolicy {
-public:
+class ObservationPolicy
+{
+   public:
     explicit ObservationPolicy(const std::vector<DarkZoneConfig>& zones);
 
     const DarkZoneConfig* zoneFor(StationId stationId) const;
@@ -15,6 +16,6 @@ public:
     const DarkZoneConfig* enteredZone(StationId from, StationId to) const;
     const DarkZoneConfig* exitedZone(StationId from, StationId to) const;
 
-private:
+   private:
     std::vector<DarkZoneConfig> zones;
 };
