@@ -1,16 +1,21 @@
 #pragma once
 
-#include "Station.hpp"
 #include <optional>
 
-enum class StationEventType {
+#include "Station.hpp"
+
+enum class StationEventType
+{
     UNIT_ARRIVED,
     PROCESSING_STARTED,
     PROCESSING_COMPLETED,
-    STATE_CHANGED
+    STATE_CHANGED,
+    DARK_ZONE_ENTERED,
+    DARK_ZONE_EXITED
 };
 
-struct StationEvent {
+struct StationEvent
+{
     Time timestamp;
     StationEventType type;
     StationId stationId;
@@ -19,4 +24,5 @@ struct StationEvent {
     std::optional<StationState> previousState;
     std::optional<StationState> newState;
     std::optional<Time> cycleTime;
+    std::optional<std::string> darkZoneId;
 };

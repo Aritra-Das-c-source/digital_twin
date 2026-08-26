@@ -1,0 +1,10 @@
+^C:\PROJECTS\DIGITAL_TWIN\SIMULATION\BUILD-CONFIG-TEST\_DEPS\NLOHMANN_JSON-SUBBUILD\CMAKEFILES\75F3BDD2ECF1772654058D534E75E003\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Projects/digital_twin/simulation/build-config-test/_deps/nlohmann_json-subbuild -BC:/Projects/digital_twin/simulation/build-config-test/_deps/nlohmann_json-subbuild --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Projects/digital_twin/simulation/build-config-test/_deps/nlohmann_json-subbuild/nlohmann_json-populate.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
