@@ -2,6 +2,8 @@
 
 `factory.json` is the fixed physical line: contiguous station IDs, processing and buffer parameters, sensor coverage, and checkpoints. A scenario supplies a seed, duration, dynamic degradation and optional dark zones. `defects.json` defines defect introduction and downstream effects.
 
+Sensor coverage determines the emitted telemetry: `PARTIAL` stations emit `VIBRATION` (g) and `TEMPERATURE` (C); `HIGH` stations also emit `CURRENT` (A) and `TORQUE` (Nm); `NONE` emits no telemetry. Defect `sensorEffects` may use any emitted sensor type, including `TORQUE`, for example `"sensorEffects":{"TORQUE":{"meanShift":4.0}}`.
+
 For fast training-data generation, use the ZIP runtime interface. The configuration ZIP must
 contain exactly one `factory.json`, exactly one `defects.json`, and a scenario as either
 `scenario.json` or the sole JSON file in `scenarios/`. It produces a ZIP containing every CSV.

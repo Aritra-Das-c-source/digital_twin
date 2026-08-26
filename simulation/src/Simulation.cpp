@@ -228,7 +228,7 @@ void Simulation::emitSensorSample(const Station &s)
         return;
     auto activity = physicalActivity(s);
     bool processing = activity == PhysicalActivity::PROCESSING_LOAD;
-    double vibrationShift = 0, tempShift = 0;
+    double vibrationShift = 0, tempShift = 0, torqueShift = 0;
     if (processing && s.currentUnit)
         for (auto e : effectsFor(*s.currentUnit, s.id))
         {
@@ -236,6 +236,8 @@ void Simulation::emitSensorSample(const Station &s)
                 vibrationShift += i->second;
             if (auto i = e->sensorMeanShifts.find("TEMPERATURE"); i != e->sensorMeanShifts.end())
                 tempShift += i->second;
+            if (auto i = e->sensorMeanShifts.find("TORQUE"); i != e->sensorMeanShifts.end())
+                torqueShift += i->second;
         }
     auto &state = degradation[s.id];
     double drift = .25 * state.level + .75 * performanceSeverity(s);
@@ -258,6 +260,13 @@ void Simulation::emitSensorSample(const Station &s)
     if (s.sensorCoverage == "HIGH")
     {
         output.writeSensorReading(currentTime, s.id, "CURRENT", sensor.current, "A");
+        double targetTorque = processing ? 55 :
+            (activity == PhysicalActivity::HOLDING_UNIT ? 8 : 0);
+        sensor.torque = respond(sensor.torque,
+                                targetTorque + drift * 7 + torqueShift +
+                                    (state.intermittentFaultActive ? 3.5 : 0),
+                                .70, .45);
+        output.writeSensorReading(currentTime, s.id, "TORQUE", sensor.torque, "Nm");
     }
 }
 void Simulation::handleSensorSample(const SimEvent &e)
