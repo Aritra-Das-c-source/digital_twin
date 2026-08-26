@@ -19,6 +19,7 @@ add_executable(simulation
     src/Output.cpp
     src/ConfigLoader.cpp
     src/ObservationPolicy.cpp
+    src/RuntimeArchive.cpp
 )
 
 target_link_libraries(simulation PRIVATE nlohmann_json::nlohmann_json)

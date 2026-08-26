@@ -13,6 +13,8 @@ class OutputWriter
    public:
     explicit OutputWriter(const std::filesystem::path& outputDirectory);
 
+    void close();
+
     void writeStations(const std::vector<Station>& stations);
 
     void writeStationCheckpoints(const std::vector<CheckpointDefinition>& checkpoints);
@@ -39,7 +41,6 @@ class OutputWriter
 
    private:
     std::filesystem::path outputDirectory;
-
     std::ofstream unitsFile;
     std::ofstream stationEventsFile;
     std::ofstream sensorReadingsFile;

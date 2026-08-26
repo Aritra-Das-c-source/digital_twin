@@ -42,6 +42,16 @@ OutputWriter::OutputWriter(const std::filesystem::path& outputDirectory)
     checkpointEventsFile << "event_id,timestamp_ms,event_type,station_id,unit_id,checkpoint_id\n";
 }
 
+void OutputWriter::close()
+{
+    unitsFile.close();
+    stationEventsFile.close();
+    sensorReadingsFile.close();
+    manualChecksFile.close();
+    inspectionResultsFile.close();
+    checkpointEventsFile.close();
+}
+
 namespace
 {
 

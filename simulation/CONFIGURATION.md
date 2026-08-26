@@ -2,7 +2,15 @@
 
 `factory.json` is the fixed physical line: contiguous station IDs, processing and buffer parameters, sensor coverage, and checkpoints. A scenario supplies a seed, duration, dynamic degradation and optional dark zones. `defects.json` defines defect introduction and downstream effects.
 
-Run the default mixed example from a build directory with `simulation`, or choose files explicitly:
+For fast training-data generation, use the ZIP runtime interface. The configuration ZIP must
+contain exactly one `factory.json`, exactly one `defects.json`, and a scenario as either
+`scenario.json` or the sole JSON file in `scenarios/`. It produces a ZIP containing every CSV.
+Choose the output ZIP filename with `--output`.
+
+`simulation --config training_config.zip --output batch_042.zip`
+
+This interface uses the built-in Windows PowerShell archive commands. Run the default mixed
+example from a build directory with `simulation`, or choose files explicitly:
 
 `simulation --factory config/factory.json --scenario config/scenarios/defects.json --defects config/defects.json --output output/defects_run`
 

@@ -375,4 +375,5 @@ void Simulation::run()
     flushCheckpointEvents();
     output.writeRunMetadata(runId, config.randomSeed, config.duration, stations.size(),
                             nextUnitId - 1);
+    output.close();
 }
