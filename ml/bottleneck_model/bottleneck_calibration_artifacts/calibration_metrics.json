@@ -1,0 +1,88 @@
+{
+  "dataset": "data\\bottleneck_causal_features.parquet",
+  "model_dir": "bottleneck_model_artifacts",
+  "xgboost_retrained": false,
+  "validation_runs_used_for_calibration": [
+    "train_183_gradual",
+    "train_186_accelerating",
+    "train_189_step",
+    "train_192_intermittent"
+  ],
+  "test_runs_evaluation_only": [
+    "train_184_gradual",
+    "train_187_accelerating",
+    "train_190_step",
+    "train_193_intermittent",
+    "train_195_severe"
+  ],
+  "validation_rows": 142328,
+  "test_rows": 178171,
+  "method_selection": "run-wise out-of-fold calibration within validation runs",
+  "selection_metric": "minimum OOF validation Brier score; log-loss and ECE as tie-breakers",
+  "oof_validation_calibration_metrics": {
+    "raw": {
+      "brier": 0.011327982794430128,
+      "log_loss": 0.03887667203600569,
+      "ece_15": 0.003602119456498825,
+      "pr_auc": 0.9147048416204367,
+      "roc_auc": 0.9944149032003288
+    },
+    "platt": {
+      "brier": 0.011726650660708951,
+      "log_loss": 0.039461893280784546,
+      "ece_15": 0.0038909294060923915,
+      "pr_auc": 0.9039151683409131,
+      "roc_auc": 0.9941242873936958
+    },
+    "isotonic": {
+      "brier": 0.012036101388848745,
+      "log_loss": 0.04159833308323896,
+      "ece_15": 0.004075271994580829,
+      "pr_auc": 0.9013023844717885,
+      "roc_auc": 0.9925030827357554
+    }
+  },
+  "selected_method": "raw",
+  "original_threshold": 0.1555924266576767,
+  "calibrated_threshold": 0.1555924266576767,
+  "threshold_objective": "f2",
+  "validation_threshold_score": 0.8577405857740584,
+  "test_uncalibrated_probability_metrics": {
+    "brier": 0.011822875611857995,
+    "log_loss": 0.04087170440110533,
+    "ece_15": 0.0037711173735287345,
+    "pr_auc": 0.9187376575223432,
+    "roc_auc": 0.9930278831914102
+  },
+  "test_calibrated_probability_metrics": {
+    "brier": 0.011822875611857995,
+    "log_loss": 0.04087170440110533,
+    "ece_15": 0.0037711173735287345,
+    "pr_auc": 0.9187376575223432,
+    "roc_auc": 0.9930278831914102
+  },
+  "test_uncalibrated_classification_at_original_threshold": {
+    "threshold": 0.1555924266576767,
+    "balanced_accuracy": 0.9509180533611727,
+    "precision": 0.6781939629660946,
+    "recall": 0.924291311362065,
+    "f1": 0.782345769324555,
+    "f2": 0.861750359913191,
+    "tn": 165687,
+    "fp": 3806,
+    "fn": 657,
+    "tp": 8021
+  },
+  "test_calibrated_classification_at_calibrated_threshold": {
+    "threshold": 0.1555924266576767,
+    "balanced_accuracy": 0.9509180533611727,
+    "precision": 0.6781939629660946,
+    "recall": 0.924291311362065,
+    "f1": 0.782345769324555,
+    "f2": 0.861750359913191,
+    "tn": 165687,
+    "fp": 3806,
+    "fn": 657,
+    "tp": 8021
+  }
+}
