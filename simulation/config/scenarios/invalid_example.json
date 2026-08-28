@@ -1,1 +1,1 @@
-{"randomSeed":1,"durationMs":1000,"darkZones":[{"id":"BAD","name":"Invalid example","startStationId":11,"endStationId":99,"observability":{"sensorTelemetry":true}}],"degradation":[]}
+{"randomSeed":1,"durationMs":1000,"degradation":[{"stationId":99,"scenario":"GRADUAL"}]}

@@ -138,6 +138,21 @@ void OutputWriter::writeStationCheckpoints(const std::vector<CheckpointDefinitio
     }
 }
 
+void OutputWriter::writeDarkZones(const std::vector<DarkZoneConfig>& zones)
+{
+    std::ofstream file(outputDirectory / "dz.csv");
+    if (!file)
+        throw std::runtime_error("Failed to open dz.csv");
+
+    file << "dark_zone_id,name,start_station_id,end_station_id,sensor_telemetry,manual_checks,checkpoints\n";
+    for (const DarkZoneConfig& zone : zones)
+        file << zone.id << ',' << zone.name << ',' << stationKey(zone.startStationId) << ','
+             << stationKey(zone.endStationId) << ','
+             << (zone.observability.sensorTelemetry ? "true" : "false") << ','
+             << (zone.observability.manualChecks ? "true" : "false") << ','
+             << (zone.observability.checkpoints ? "true" : "false") << '\n';
+}
+
 void OutputWriter::writeStations(const std::vector<Station>& stations)
 {
     std::ofstream file(outputDirectory / "stations.csv");
@@ -270,5 +285,5 @@ void OutputWriter::writeRunMetadata(const std::string& runId, std::uint32_t rand
          << "  \"simulation_duration_ms\": " << duration << ",\n"
          << "  \"station_count\": " << stationCount << ",\n"
          << "  \"units_created\": " << unitsCreated << ",\n"
-         << "  \"schema_version\": \"2.0\"\n}\n";
+         << "  \"schema_version\": \"2.1\"\n}\n";
 }

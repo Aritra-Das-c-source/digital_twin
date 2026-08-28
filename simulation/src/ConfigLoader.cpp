@@ -106,10 +106,12 @@ SimulationConfig ConfigLoader::load(const std::filesystem::path& factoryFile,
         probability(factoryFile, "checkpoint " + c.id + ".falsePositiveRate", c.falsePositiveRate);
         result.checkpoints.push_back(std::move(c));
     }
+    if (scenario.contains("darkZones"))
+        fail(scenarioFile, "darkZones", "belongs in factory.json");
     StationId previousEnd = 0;
     bool first = true;
     std::set<std::string> zoneIds;
-    for (const auto& item : scenario.value("darkZones", json::array()))
+    for (const auto& item : factory.value("darkZones", json::array()))
     {
         const auto& o = item.at("observability");
         DarkZoneConfig z{item.at("id"),
@@ -122,11 +124,11 @@ SimulationConfig ConfigLoader::load(const std::filesystem::path& factoryFile,
             !ids.contains(z.endStationId) || z.startStationId >= z.endStationId ||
             z.startStationId == 0 || z.endStationId + 1 >= result.stations.size() ||
             (!first && z.startStationId <= previousEnd + 1))
-            fail(scenarioFile, "dark zone " + z.id,
+            fail(factoryFile, "dark zone " + z.id,
                  "must be an internal, non-adjacent group of at least two stations");
         for (StationId n = z.startStationId; n <= z.endStationId; ++n)
             if (result.stations[n].archetype == "INSPECTION")
-                fail(scenarioFile, "dark zone " + z.id,
+                fail(factoryFile, "dark zone " + z.id,
                      "inspection stations are not supported inside a dark zone");
         previousEnd = z.endStationId;
         first = false;

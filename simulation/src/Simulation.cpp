@@ -35,6 +35,7 @@ Simulation::Simulation(SimulationConfig value, std::filesystem::path directory, 
                                c.falsePositiveRate, c.identifiesUnit});
     output.writeStations(stations);
     output.writeStationCheckpoints(checkpoints);
+    output.writeDarkZones(config.darkZones);
 }
 Time Simulation::sampleCycleTime(const Station &station, UnitId unit)
 {

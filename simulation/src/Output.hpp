@@ -7,6 +7,7 @@
 
 #include "Station.hpp"
 #include "StationEvent.hpp"
+#include "Config.hpp"
 
 class OutputWriter
 {
@@ -18,6 +19,8 @@ class OutputWriter
     void writeStations(const std::vector<Station>& stations);
 
     void writeStationCheckpoints(const std::vector<CheckpointDefinition>& checkpoints);
+
+    void writeDarkZones(const std::vector<DarkZoneConfig>& zones);
 
     void writeUnit(UnitId unitId, Time createdAt);
 
