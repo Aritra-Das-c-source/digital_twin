@@ -1,0 +1,231 @@
+{
+    "split_counts": {
+        "train": {
+            "rows": 1718,
+            "fails": 133
+        },
+        "val": {
+            "rows": 432,
+            "fails": 34
+        },
+        "test": {
+            "rows": 428,
+            "fails": 29
+        }
+    },
+    "val_metrics_a": {
+        "threshold": 0.5,
+        "pr_auc": 0.5757420881572014,
+        "roc_auc": 0.8312887969258055,
+        "precision": 0.7741935483870968,
+        "recall": 0.7058823529411765,
+        "f1": 0.7384615384615385,
+        "f2": 0.718562874251497,
+        "tn": 391,
+        "fp": 7,
+        "fn": 10,
+        "tp": 24
+    },
+    "val_metrics_b": {
+        "threshold": 0.59,
+        "pr_auc": 0.46495204250808997,
+        "roc_auc": 0.7644102867277565,
+        "precision": 0.6785714285714286,
+        "recall": 0.5588235294117647,
+        "f1": 0.6129032258064516,
+        "f2": 0.5792682926829268,
+        "tn": 389,
+        "fp": 9,
+        "fn": 15,
+        "tp": 19
+    },
+    "test_metrics_a": {
+        "threshold": 0.5,
+        "pr_auc": 0.7469406712081039,
+        "roc_auc": 0.8979344914009161,
+        "precision": 0.696969696969697,
+        "recall": 0.7931034482758621,
+        "f1": 0.7419354838709677,
+        "f2": 0.7718120805369127,
+        "tn": 389,
+        "fp": 10,
+        "fn": 6,
+        "tp": 23
+    },
+    "test_metrics_b": {
+        "threshold": 0.59,
+        "pr_auc": 0.6740659198542343,
+        "roc_auc": 0.87468671679198,
+        "precision": 0.6206896551724138,
+        "recall": 0.6206896551724138,
+        "f1": 0.6206896551724138,
+        "f2": 0.6206896551724138,
+        "tn": 388,
+        "fp": 11,
+        "fn": 11,
+        "tp": 18
+    },
+    "test_ci_a": {
+        "pr_auc": {
+            "lower_ci": 0.5819585552485477,
+            "upper_ci": 0.884160111862691
+        },
+        "roc_auc": {
+            "lower_ci": 0.8151594212550035,
+            "upper_ci": 0.9685539400764842
+        },
+        "precision": {
+            "lower_ci": 0.53328125,
+            "upper_ci": 0.84
+        },
+        "recall": {
+            "lower_ci": 0.6363636363636364,
+            "upper_ci": 0.9333870967741933
+        },
+        "f1": {
+            "lower_ci": 0.6,
+            "upper_ci": 0.8518670309653915
+        },
+        "f2": {
+            "lower_ci": 0.625,
+            "upper_ci": 0.8875808770668583
+        }
+    },
+    "test_ci_b": {
+        "pr_auc": {
+            "lower_ci": 0.5050395710394565,
+            "upper_ci": 0.8223782588185597
+        },
+        "roc_auc": {
+            "lower_ci": 0.7817696862612117,
+            "upper_ci": 0.9484250071387779
+        },
+        "precision": {
+            "lower_ci": 0.43331081081081085,
+            "upper_ci": 0.7894736842105263
+        },
+        "recall": {
+            "lower_ci": 0.4443333333333333,
+            "upper_ci": 0.7949999999999993
+        },
+        "f1": {
+            "lower_ci": 0.46153846153846156,
+            "upper_ci": 0.75
+        },
+        "f2": {
+            "lower_ci": 0.45454545454545453,
+            "upper_ci": 0.7668711656441718
+        }
+    },
+    "loro_summary": {
+        "model_a": {
+            "mean_pr_auc": 0.6002814933035431,
+            "std_pr_auc": 0.15893182419840363,
+            "mean_roc_auc": 0.8934049538124426,
+            "std_roc_auc": 0.04641789890864057
+        },
+        "model_b": {
+            "mean_pr_auc": 0.5312646543536064,
+            "std_pr_auc": 0.1508960698137674,
+            "mean_roc_auc": 0.8441828469265624,
+            "std_roc_auc": 0.05323834046516622
+        }
+    },
+    "no_skill": {
+        "positive_prevalence": 0.06775700934579439,
+        "pr_auc": 0.06775700934579439,
+        "always_pass_accuracy": 0.9322429906542056
+    },
+    "top_coefs_a": {
+        "pos": [
+            {
+                "feature": "vibration_max",
+                "coef": 1.907412402213771
+            },
+            {
+                "feature": "current_max",
+                "coef": 1.5280287036008315
+            },
+            {
+                "feature": "torque_std",
+                "coef": 0.8955615378356276
+            },
+            {
+                "feature": "mean_queue_length",
+                "coef": 0.7938100111293164
+            },
+            {
+                "feature": "s14_manual_fail",
+                "coef": 0.2828619690203381
+            }
+        ],
+        "neg": [
+            {
+                "feature": "vibration_mean",
+                "coef": -0.9574915855418885
+            },
+            {
+                "feature": "torque_mean",
+                "coef": -1.005611365387385
+            },
+            {
+                "feature": "torque_max",
+                "coef": -1.6353986423874567
+            },
+            {
+                "feature": "temperature_mean",
+                "coef": -1.7015286554624904
+            },
+            {
+                "feature": "temperature_max",
+                "coef": -2.191203255845559
+            }
+        ]
+    },
+    "top_coefs_b": {
+        "pos": [
+            {
+                "feature": "torque_std",
+                "coef": 0.9445695593834125
+            },
+            {
+                "feature": "mean_queue_length",
+                "coef": 0.692478114441652
+            },
+            {
+                "feature": "supplier_batch_BATCH_02",
+                "coef": 0.35775808258465236
+            },
+            {
+                "feature": "max_cycle_time",
+                "coef": 0.2588260251468974
+            },
+            {
+                "feature": "manual_fail_count",
+                "coef": 0.2540047561153427
+            }
+        ],
+        "neg": [
+            {
+                "feature": "std_cycle_time",
+                "coef": -0.14214407849511648
+            },
+            {
+                "feature": "vehicle_model_MODEL_A",
+                "coef": -0.15523113441483266
+            },
+            {
+                "feature": "manual_check_count",
+                "coef": -0.43064728807771346
+            },
+            {
+                "feature": "max_queue_length",
+                "coef": -0.4834637892743377
+            },
+            {
+                "feature": "supplier_batch_BATCH_01",
+                "coef": -0.6012859063819468
+            }
+        ]
+    }
+}

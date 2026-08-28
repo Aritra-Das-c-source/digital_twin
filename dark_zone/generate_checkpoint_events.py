@@ -119,25 +119,12 @@ def generate_checkpoint_events(
                     "checkpoint_id": cp.checkpoint_id,
                 })
 
-    columns = [
-        "event_id", "timestamp_ms", "event_type",
-        "station_id", "unit_id", "checkpoint_id",
-    ]
-    if rows:
-        out = pd.DataFrame(rows, columns=columns).sort_values("timestamp_ms").reset_index(drop=True)
-        out["event_id"] = [f"CE{i+1:06d}" for i in range(len(out))]  # renumber in final chronological order
-    else:
-        # A valid DARK topology may simply contain no configured checkpoints.
-        # Keep a schema-correct empty CSV so downstream replay can treat this as
-        # "no Layer-3/4 evidence" instead of failing on a missing timestamp column.
-        out = pd.DataFrame(columns=columns)
+    out = pd.DataFrame(rows).sort_values("timestamp_ms").reset_index(drop=True)
+    out["event_id"] = [f"CE{i+1:06d}" for i in range(len(out))]  # renumber in final chronological order
     out.to_csv(output_csv, index=False)
 
     print(f"Generated {len(out)} checkpoint events -> {output_csv}")
-    if not out.empty:
-        print(out.groupby(["station_id", "checkpoint_id"]).size())
-    else:
-        print("No configured checkpoint evidence applies to the selected DARK stations.")
+    print(out.groupby(["station_id", "checkpoint_id"]).size())
     return out
 
 

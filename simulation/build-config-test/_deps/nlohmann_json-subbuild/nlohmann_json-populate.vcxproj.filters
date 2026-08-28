@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-mkdir.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-download.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-update.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-patch.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-configure.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-build.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-install.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\b61841fa0b7e3bd96b67fb5409d27679\nlohmann_json-populate-test.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\7f821077709dd6d7cfd68d906df52224\nlohmann_json-populate-complete.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\75f3bdd2ecf1772654058d534e75e003\nlohmann_json-populate.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+    <CustomBuild Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="C:\Projects\digital_twin\simulation\build-config-test\_deps\nlohmann_json-subbuild\CMakeFiles\nlohmann_json-populate" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{FD1DE8A4-65C0-3656-88EF-933BAD6A51AF}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
