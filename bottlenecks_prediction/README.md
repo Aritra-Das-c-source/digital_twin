@@ -30,7 +30,28 @@ data/calibration/history/<run_name>/
 The current run is **never** used to calibrate itself by `run_current.py`.
 
 ## One-click use
-run it from run_current.py
+
+Install dependencies (Python 3.10+ recommended), then run the launcher:
+
+```bash
+pip install -r requirements.txt
+python run_current.py
+```
+
+Run it from the `bottlenecks_prediction/` directory so the relative `data/`, `config/`, and `dark_zone/` paths resolve correctly.
+
+By default the launcher prints the available station IDs and prompts you to enter which ones are DARK (comma-separated, e.g. `S08,S12,S13,S14`; leave blank for all LIGHT). You can skip the prompt with flags:
+
+```bash
+python run_current.py --dark-stations S08,S12,S13,S14 --particles 3000 --run-id CURRENT_RUN
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dark-stations` | prompts interactively | Comma-separated DARK station IDs |
+| `--particles` | `3000` | Number of simulation particles |
+| `--output` | `data/output/predictions.jsonl` | Where predictions are written |
+| `--run-id` | `CURRENT_RUN` | Label for this run |
 
 ## Simulator contract
 
