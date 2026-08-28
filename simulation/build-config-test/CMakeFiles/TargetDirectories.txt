@@ -1,4 +1,0 @@
-C:/Projects/digital_twin/simulation/build-config-test/CMakeFiles/simulation.dir
-C:/Projects/digital_twin/simulation/build-config-test/CMakeFiles/ALL_BUILD.dir
-C:/Projects/digital_twin/simulation/build-config-test/CMakeFiles/ZERO_CHECK.dir
-C:/Projects/digital_twin/simulation/build-config-test/_deps/nlohmann_json-build/CMakeFiles/ALL_BUILD.dir

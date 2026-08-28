@@ -1,8 +1,0 @@
-{"randomSeed":777,"durationMs":28800000,"darkZones":[
- {"id":"DZ_BODY_01","name":"Legacy Body Alignment Section","startStationId":11,"endStationId":14,"observability":{"sensorTelemetry":true,"manualChecks":true,"checkpoints":true}}
-],"degradation":[
- {"stationId":6,"scenario":"GRADUAL","initialLevel":0.15},
- {"stationId":13,"scenario":"INTERMITTENT","initialLevel":0.18},
- {"stationId":14,"scenario":"ACCELERATING","initialLevel":0.12},
- {"stationId":27,"scenario":"SEVERE","initialLevel":0.12}
-]}

@@ -1,4 +1,9 @@
-/simulation/build
-dark_zone/*.db
-dark_zone/historical_dwell.csv
+.venv/
 __pycache__/
+*.pyc
+.pytest_cache/
+data/output/*
+!data/output/.gitkeep
+data/calibration/generated/*
+!data/calibration/generated/.gitkeep
+data/input/configured_stations.csv

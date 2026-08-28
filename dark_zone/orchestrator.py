@@ -170,6 +170,8 @@ class DarkZoneOrchestrator:
         self.meta: dict[str, dict] = {}          # vehicle_id -> {station, variant, entry_ts}
         self.last_event_ts: dict[str, float] = {}  # for computing dt on TICK
         self.rejected_log: list[dict] = []        # gated-out events, for QA review
+        self.confirmed_exits: list[dict] = []     # real, confirmed exit records — the ONLY
+                                                     # non-inferred output this system produces
         self.persistence = persistence
 
         # persist_mode trade-off:
@@ -324,12 +326,50 @@ class DarkZoneOrchestrator:
                 pf.update(lik)
 
         elif ev.event_type == EventType.STATION_EXIT:
+            # Emit the confirmed-exit record BEFORE teardown discards the
+            # state — this is the fix for the second gap: previously the
+            # real, true exit timestamp was used only internally to stop
+            # tracking, then thrown away. Downstream consumers never
+            # received a clean "this genuinely happened" record at all,
+            # only the continuous in-progress ESTIMATES beforehand.
+            self.confirmed_exits.append(self._build_confirmed_exit(ev))
             self._teardown(ev.vehicle_id)
             return  # nothing left to persist for this vehicle
 
         # Write-ahead: persist AFTER mutating in-memory state, before this
         # route_event() call returns control to the caller's event-bus ack.
         self._persist(ev.vehicle_id)
+
+    def _build_confirmed_exit(self, ev: "DarkZoneEvent") -> dict:
+        """
+        The ONE record type this whole system produces that is NOT an
+        estimate. Matches the same field shape a real light-zone sensor
+        event would have (VIN, station, exit timestamp) — this is what
+        makes dark-zone output structurally compatible with the shared
+        Feast/stream pipeline real telemetry feeds, per the architecture
+        doc's integration requirement. entry_ts included for computing the
+        real, ground-truth-accurate total dwell time, now that it's known.
+        """
+        m = self.meta.get(ev.vehicle_id, {})
+        return {
+            "vehicle_id": ev.vehicle_id,
+            "station_id": ev.station_id,
+            "variant": m.get("variant"),
+            "entry_ts": m.get("entry_ts"),
+            "exit_ts": ev.ts,
+            "actual_dwell_s": (ev.ts - m["entry_ts"]) if "entry_ts" in m else None,
+            "is_inferred": False,
+            "data_source": "confirmed_boundary_event",
+        }
+
+    def export_confirmed_exits(self, clear: bool = True) -> list[dict]:
+        """Call periodically (e.g. every batch flush) to drain confirmed-exit
+        records for downstream delivery. clear=True empties the buffer so
+        records aren't re-delivered on the next call."""
+        records = list(self.confirmed_exits)
+        if clear:
+            self.confirmed_exits.clear()
+        return records
 
     def _log_rejected(self, vehicle_id: str, reason: str, ev: DarkZoneEvent) -> None:
         self.rejected_log.append({"reason": reason, "event": ev.__dict__})
@@ -428,6 +468,14 @@ class DarkZoneOrchestrator:
             "eta_std": round(est["eta_std"], 2),
             "render_confidence": round(est["render_confidence"], 3),
             "eta_seconds": round(est["eta_s"], 1),
+            # EXPLICIT provenance marker — this is the fix for a real gap:
+            # nothing previously told a downstream consumer this row came
+            # from a particle filter estimate rather than a real sensor.
+            # Never omit this field; a consumer merging dark-zone output
+            # with real light-zone telemetry MUST be able to tell them
+            # apart without cross-referencing a separate station list.
+            "is_inferred": True,
+            "data_source": "particle_filter_estimate",
             "elapsed_seconds": round(est["elapsed_s"], 1),
             "multimodal_warning": multimodal,
             "snapshot_ts": time.time(),

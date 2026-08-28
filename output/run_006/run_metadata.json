@@ -1,8 +1,0 @@
-{
-  "run_id": "run_001",
-  "random_seed": 42,
-  "simulation_duration_ms": 28800000,
-  "station_count": 40,
-  "units_created": 494,
-  "schema_version": "1.0"
-}
