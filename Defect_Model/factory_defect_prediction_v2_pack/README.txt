@@ -1,1 +1,0 @@
-Defect prediction v2: 20 train, 5 validation, 5 test. Target rates 2%-15%, concentrated around 8% (truncated-normal-shaped allocation). Hard degradation: intermittent, accelerating, multi_hard. Actual observed defect rate must be verified after simulation.
