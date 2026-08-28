@@ -26,7 +26,7 @@ from dark_zone_tracker import fit_dwell_distribution
 from persistence import SQLitePersistence
 from orchestrator import DarkZoneOrchestrator
 from csv_adapter import inspect_event_types, derive_historical_dwell_csv, load_all_dark_zone_events
-from corridor_config import single_station_dark_ids_excluding_corridors
+from station_config import dark_zone_station_ids
 
 
 def run(
@@ -39,12 +39,7 @@ def run(
     db_path: str = "dark_zone_state.db",
 ):
     # ---- Step 0: figure out which stations are actually dark zones ----
-    # Correctly excludes any station that's nominally sensor_coverage=NONE
-    # but has ZERO individual processing events because it's actually
-    # swallowed into a multi-station corridor (see corridor_config.py) —
-    # feeding such a station to single-station fitting would silently waste
-    # effort on zero data instead of routing it to the corridor tracker.
-    dz_ids = single_station_dark_ids_excluding_corridors(stations_csv, station_events_csv)
+    dz_ids = dark_zone_station_ids(stations_csv)
     print(f"Dark-zone stations (sensor_coverage=NONE): {sorted(dz_ids)}\n")
 
     print("Distinct event_type values in your CSV:")
