@@ -1,0 +1,47 @@
+[
+  {
+    "name": "validation_001_intermittent_late_4p0pct",
+    "config": "configs/validation_001_intermittent_late_4p0pct.zip",
+    "output": "outputs/validation_001_intermittent_late_4p0pct.zip",
+    "seed": 90000,
+    "target_overall_defect_rate": 0.04,
+    "rate_scale_factor": 0.5,
+    "degradation_family": "intermittent_late"
+  },
+  {
+    "name": "validation_002_accelerating_6p8pct",
+    "config": "configs/validation_002_accelerating_6p8pct.zip",
+    "output": "outputs/validation_002_accelerating_6p8pct.zip",
+    "seed": 90001,
+    "target_overall_defect_rate": 0.068,
+    "rate_scale_factor": 0.85,
+    "degradation_family": "accelerating"
+  },
+  {
+    "name": "validation_003_accelerating_hard_8p0pct",
+    "config": "configs/validation_003_accelerating_hard_8p0pct.zip",
+    "output": "outputs/validation_003_accelerating_hard_8p0pct.zip",
+    "seed": 90002,
+    "target_overall_defect_rate": 0.08,
+    "rate_scale_factor": 1.0,
+    "degradation_family": "accelerating_hard"
+  },
+  {
+    "name": "validation_004_multi_hard_9p8pct",
+    "config": "configs/validation_004_multi_hard_9p8pct.zip",
+    "output": "outputs/validation_004_multi_hard_9p8pct.zip",
+    "seed": 90003,
+    "target_overall_defect_rate": 0.098,
+    "rate_scale_factor": 1.225,
+    "degradation_family": "multi_hard"
+  },
+  {
+    "name": "validation_005_multi_hard_2_13p0pct",
+    "config": "configs/validation_005_multi_hard_2_13p0pct.zip",
+    "output": "outputs/validation_005_multi_hard_2_13p0pct.zip",
+    "seed": 90004,
+    "target_overall_defect_rate": 0.13,
+    "rate_scale_factor": 1.625,
+    "degradation_family": "multi_hard_2"
+  }
+]

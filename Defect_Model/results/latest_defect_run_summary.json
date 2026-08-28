@@ -1,0 +1,16 @@
+{
+  "predictions": 14073,
+  "warning_events": 236,
+  "warned_units": 25,
+  "predictions_with_shap": 236,
+  "max_defect_probability": 0.9777203773979565,
+  "run_id": "test_005_intermittent_14p0pct",
+  "model_version": "v5",
+  "alert_policy": "raw",
+  "alert_threshold": 0.1421320160758933,
+  "explain_mode": "warnings",
+  "shap_top_k": 3,
+  "dark_zone_used": false,
+  "status": "PASS",
+  "output_file": "/Users/kartik/Desktop/acc final/model2 new/results/defect_predictions_20260828_124524.jsonl"
+}

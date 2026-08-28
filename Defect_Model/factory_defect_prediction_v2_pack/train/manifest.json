@@ -1,0 +1,182 @@
+[
+  {
+    "name": "train_001_baseline_2p0pct",
+    "config": "configs/train_001_baseline_2p0pct.zip",
+    "output": "outputs/train_001_baseline_2p0pct.zip",
+    "seed": 80000,
+    "target_overall_defect_rate": 0.02,
+    "rate_scale_factor": 0.25,
+    "degradation_family": "baseline"
+  },
+  {
+    "name": "train_002_intermittent_3p5pct",
+    "config": "configs/train_002_intermittent_3p5pct.zip",
+    "output": "outputs/train_002_intermittent_3p5pct.zip",
+    "seed": 80001,
+    "target_overall_defect_rate": 0.035,
+    "rate_scale_factor": 0.4375,
+    "degradation_family": "intermittent"
+  },
+  {
+    "name": "train_003_intermittent_late_4p5pct",
+    "config": "configs/train_003_intermittent_late_4p5pct.zip",
+    "output": "outputs/train_003_intermittent_late_4p5pct.zip",
+    "seed": 80002,
+    "target_overall_defect_rate": 0.045,
+    "rate_scale_factor": 0.5625,
+    "degradation_family": "intermittent_late"
+  },
+  {
+    "name": "train_004_accelerating_5p5pct",
+    "config": "configs/train_004_accelerating_5p5pct.zip",
+    "output": "outputs/train_004_accelerating_5p5pct.zip",
+    "seed": 80003,
+    "target_overall_defect_rate": 0.055,
+    "rate_scale_factor": 0.6875,
+    "degradation_family": "accelerating"
+  },
+  {
+    "name": "train_005_accelerating_hard_6p0pct",
+    "config": "configs/train_005_accelerating_hard_6p0pct.zip",
+    "output": "outputs/train_005_accelerating_hard_6p0pct.zip",
+    "seed": 80004,
+    "target_overall_defect_rate": 0.06,
+    "rate_scale_factor": 0.75,
+    "degradation_family": "accelerating_hard"
+  },
+  {
+    "name": "train_006_multi_hard_6p5pct",
+    "config": "configs/train_006_multi_hard_6p5pct.zip",
+    "output": "outputs/train_006_multi_hard_6p5pct.zip",
+    "seed": 80005,
+    "target_overall_defect_rate": 0.065,
+    "rate_scale_factor": 0.8125,
+    "degradation_family": "multi_hard"
+  },
+  {
+    "name": "train_007_multi_hard_2_7p0pct",
+    "config": "configs/train_007_multi_hard_2_7p0pct.zip",
+    "output": "outputs/train_007_multi_hard_2_7p0pct.zip",
+    "seed": 80006,
+    "target_overall_defect_rate": 0.07,
+    "rate_scale_factor": 0.875,
+    "degradation_family": "multi_hard_2"
+  },
+  {
+    "name": "train_008_baseline_7p2pct",
+    "config": "configs/train_008_baseline_7p2pct.zip",
+    "output": "outputs/train_008_baseline_7p2pct.zip",
+    "seed": 80007,
+    "target_overall_defect_rate": 0.072,
+    "rate_scale_factor": 0.9,
+    "degradation_family": "baseline"
+  },
+  {
+    "name": "train_009_intermittent_7p5pct",
+    "config": "configs/train_009_intermittent_7p5pct.zip",
+    "output": "outputs/train_009_intermittent_7p5pct.zip",
+    "seed": 80008,
+    "target_overall_defect_rate": 0.075,
+    "rate_scale_factor": 0.9375,
+    "degradation_family": "intermittent"
+  },
+  {
+    "name": "train_010_intermittent_late_7p8pct",
+    "config": "configs/train_010_intermittent_late_7p8pct.zip",
+    "output": "outputs/train_010_intermittent_late_7p8pct.zip",
+    "seed": 80009,
+    "target_overall_defect_rate": 0.078,
+    "rate_scale_factor": 0.975,
+    "degradation_family": "intermittent_late"
+  },
+  {
+    "name": "train_011_accelerating_8p0pct",
+    "config": "configs/train_011_accelerating_8p0pct.zip",
+    "output": "outputs/train_011_accelerating_8p0pct.zip",
+    "seed": 80010,
+    "target_overall_defect_rate": 0.08,
+    "rate_scale_factor": 1.0,
+    "degradation_family": "accelerating"
+  },
+  {
+    "name": "train_012_accelerating_hard_8p2pct",
+    "config": "configs/train_012_accelerating_hard_8p2pct.zip",
+    "output": "outputs/train_012_accelerating_hard_8p2pct.zip",
+    "seed": 80011,
+    "target_overall_defect_rate": 0.082,
+    "rate_scale_factor": 1.025,
+    "degradation_family": "accelerating_hard"
+  },
+  {
+    "name": "train_013_multi_hard_8p5pct",
+    "config": "configs/train_013_multi_hard_8p5pct.zip",
+    "output": "outputs/train_013_multi_hard_8p5pct.zip",
+    "seed": 80012,
+    "target_overall_defect_rate": 0.085,
+    "rate_scale_factor": 1.0625,
+    "degradation_family": "multi_hard"
+  },
+  {
+    "name": "train_014_multi_hard_2_8p8pct",
+    "config": "configs/train_014_multi_hard_2_8p8pct.zip",
+    "output": "outputs/train_014_multi_hard_2_8p8pct.zip",
+    "seed": 80013,
+    "target_overall_defect_rate": 0.088,
+    "rate_scale_factor": 1.1,
+    "degradation_family": "multi_hard_2"
+  },
+  {
+    "name": "train_015_baseline_9p0pct",
+    "config": "configs/train_015_baseline_9p0pct.zip",
+    "output": "outputs/train_015_baseline_9p0pct.zip",
+    "seed": 80014,
+    "target_overall_defect_rate": 0.09,
+    "rate_scale_factor": 1.125,
+    "degradation_family": "baseline"
+  },
+  {
+    "name": "train_016_intermittent_9p5pct",
+    "config": "configs/train_016_intermittent_9p5pct.zip",
+    "output": "outputs/train_016_intermittent_9p5pct.zip",
+    "seed": 80015,
+    "target_overall_defect_rate": 0.095,
+    "rate_scale_factor": 1.1875,
+    "degradation_family": "intermittent"
+  },
+  {
+    "name": "train_017_intermittent_late_10p0pct",
+    "config": "configs/train_017_intermittent_late_10p0pct.zip",
+    "output": "outputs/train_017_intermittent_late_10p0pct.zip",
+    "seed": 80016,
+    "target_overall_defect_rate": 0.1,
+    "rate_scale_factor": 1.25,
+    "degradation_family": "intermittent_late"
+  },
+  {
+    "name": "train_018_accelerating_10p5pct",
+    "config": "configs/train_018_accelerating_10p5pct.zip",
+    "output": "outputs/train_018_accelerating_10p5pct.zip",
+    "seed": 80017,
+    "target_overall_defect_rate": 0.105,
+    "rate_scale_factor": 1.3125,
+    "degradation_family": "accelerating"
+  },
+  {
+    "name": "train_019_accelerating_hard_12p0pct",
+    "config": "configs/train_019_accelerating_hard_12p0pct.zip",
+    "output": "outputs/train_019_accelerating_hard_12p0pct.zip",
+    "seed": 80018,
+    "target_overall_defect_rate": 0.12,
+    "rate_scale_factor": 1.5,
+    "degradation_family": "accelerating_hard"
+  },
+  {
+    "name": "train_020_multi_hard_15p0pct",
+    "config": "configs/train_020_multi_hard_15p0pct.zip",
+    "output": "outputs/train_020_multi_hard_15p0pct.zip",
+    "seed": 80019,
+    "target_overall_defect_rate": 0.15,
+    "rate_scale_factor": 1.875,
+    "degradation_family": "multi_hard"
+  }
+]
