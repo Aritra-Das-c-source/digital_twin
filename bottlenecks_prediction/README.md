@@ -40,10 +40,10 @@ python run_current.py
 
 Run it from the `bottlenecks_prediction/` directory so the relative `data/`, `config/`, and `dark_zone/` paths resolve correctly.
 
-By default the launcher prints the available station IDs and prompts you to enter which ones are DARK (comma-separated, e.g. `S08,S12,S13,S14`; leave blank for all LIGHT). You can skip the prompt with flags:
+By default the launcher prints the available station IDs and prompts you to enter which ones are DARK (comma-separated, e.g. `S08,S12,S14`; leave blank for all LIGHT). You can skip the prompt with flags:
 
 ```bash
-python run_current.py --dark-stations S08,S12,S13,S14 --particles 3000 --run-id CURRENT_RUN
+python run_current.py --dark-stations S08,S12,S14 --particles 3000 --run-id CURRENT_RUN
 ```
 
 | Flag | Default | Description |
