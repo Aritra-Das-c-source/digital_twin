@@ -225,7 +225,22 @@ def main() -> int:
         help="F2 favors recall; F1 is more balanced. Threshold is selected on validation only.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--base-model",
+        type=Path,
+        default=None,
+        help=(
+            "Optional immutable XGBoost JSON model used as the initial training state. "
+            "This is deliberately explicit: training never starts from a selected "
+            "factory artifact."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.base_model is not None:
+        args.base_model = args.base_model.expanduser().resolve()
+        if not args.base_model.is_file():
+            raise FileNotFoundError(f"Base XGBoost model not found: {args.base_model}")
 
     df = load_dataset(args.dataset)
     validate_training_contract(df)
@@ -269,6 +284,7 @@ def main() -> int:
         y_train,
         eval_set=[(X_val, y_val)],
         verbose=False,
+        xgb_model=str(args.base_model) if args.base_model is not None else None,
     )
 
     val_prob = model.predict_proba(X_val)[:, 1]
@@ -302,6 +318,7 @@ def main() -> int:
         },
         "best_iteration": int(model.best_iteration),
         "threshold_objective": args.threshold_objective,
+        "base_model": str(args.base_model) if args.base_model is not None else None,
         "selected_threshold": float(threshold),
         "validation_threshold_score": float(validation_threshold_score),
         "validation_metrics_selected_threshold": metrics(y_val, val_prob, threshold),
@@ -320,6 +337,7 @@ def main() -> int:
             "category_levels": category_levels,
             "threshold": threshold,
             "threshold_objective": args.threshold_objective,
+            "base_model": str(args.base_model) if args.base_model is not None else None,
         },
         args.output / "bottleneck_model_bundle.joblib",
     )

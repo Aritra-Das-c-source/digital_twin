@@ -13,6 +13,20 @@ The generator seed makes the result reproducible.
 inside each run directory, and writes `run_manifest.json` with every return code. It continues
 after failures by default; use `--fail-fast` to stop at the first failure.
 
+For normal operations, the same generator and orchestrator are exposed through the thin project
+shell, which defaults to the canonical locations below and does not copy the completed run CSVs:
+
+```powershell
+python bottlenecks_prediction/cli.py generate --count 20 --seed 2026
+python bottlenecks_prediction/cli.py simulate
+python bottlenecks_prediction/cli.py data list
+python bottlenecks_prediction/cli.py train factory-a
+```
+
+The resulting `simulation/training/runs/run_*` folders are the direct bottleneck-training and
+DARK-calibration source. Do not ZIP or move them into a separate `current_run` staging area for
+factory training.
+
 Generate five input pairs:
 
 ```powershell

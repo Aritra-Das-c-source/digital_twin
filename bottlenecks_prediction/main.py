@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Optional, TextIO
 
@@ -515,6 +516,8 @@ def _merged_replay_timeline(
 
 def replay_command(args: argparse.Namespace) -> int:
     """Replay CSV events through the exact live pipeline and write dashboard JSONL."""
+    if args.pace and args.mult <= 0:
+        raise ValueError("--mult must be positive when --pace is enabled")
     units_csv, events_csv, run_dir = _resolve_replay_inputs(args)
     dark_station_ids = _configured_dark_station_ids(args.configured_stations)
     corridors = _configured_corridors(args.configured_stations)
@@ -567,6 +570,7 @@ def replay_command(args: argparse.Namespace) -> int:
     processed_events = 0
     processed_evidence = 0
     last_timestamp_ms: Optional[int] = None
+    delivered_timestamp_ms: Optional[int] = None
 
     with output_path.open("w", encoding="utf-8") as output_handle:
         events = pd.read_csv(events_csv)
@@ -588,6 +592,13 @@ def replay_command(args: argparse.Namespace) -> int:
         )
         for kind, event in timeline:
             last_timestamp_ms = int(pd.to_numeric(event["timestamp_ms"], errors="raise"))
+            if args.pace and delivered_timestamp_ms is not None:
+                # MULT controls delivery timing as well as the simulated clock.
+                # Event order itself remains the source's causal order.
+                delay_seconds = max(0, last_timestamp_ms - delivered_timestamp_ms) / (1000.0 * args.mult)
+                if delay_seconds:
+                    time.sleep(delay_seconds)
+            delivered_timestamp_ms = last_timestamp_ms
             if kind == "evidence":
                 predictions = pipeline.process_evidence_event(event)
                 processed_evidence += 1
@@ -845,6 +856,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-predictions",
         action="store_true",
         help="Also print each formatted prediction to stdout.",
+    )
+    replay.add_argument(
+        "--mult",
+        type=float,
+        default=1.0,
+        help="Simulation-time to event-delivery multiplier when --pace is enabled.",
+    )
+    replay.add_argument(
+        "--pace",
+        action="store_true",
+        help="Deliver replay events against wall-clock time at --mult while preserving causal order.",
     )
     replay.set_defaults(func=replay_command)
 

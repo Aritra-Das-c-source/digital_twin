@@ -1,6 +1,45 @@
 # Final Bottleneck Prediction Pipeline
 
-## Production workflow
+## Factory-specific training and operations
+
+The canonical training input is the simulator's completed run directory tree:
+
+```text
+simulation/training/runs/run_0001/
+simulation/training/runs/run_0002/
+...
+```
+
+Use the internal shell from the repository root:
+
+```powershell
+python bottlenecks_prediction/cli.py generate --count 20
+python bottlenecks_prediction/cli.py simulate
+python bottlenecks_prediction/cli.py train factory-a
+python bottlenecks_prediction/cli.py models list
+python bottlenecks_prediction/cli.py models select factory-a
+python bottlenecks_prediction/cli.py run prescribed --run-dir simulation/training/runs/run_0001 --output predictions.jsonl --unpaced
+```
+
+`train` reads those run folders in place, builds only the frozen 28-feature
+bottleneck dataset, starts from the protected initial/base XGBoost state, and
+publishes `factory_models/<factory-id>/`. Each artifact has its own bundle,
+feature contract/category levels/threshold, configured-stations topology, and
+DARK historical calibration. It deliberately excludes runtime queues, PF state,
+recent observations, output predictions, and raw CSV copies.
+
+The selected model is only a pointer in `factory_models/selected_model.json`.
+Selecting a different artifact never modifies either model. The `base` model is
+protected; deleting a run or factory artifact requires `--force` and the shell
+will never delete `base`.
+
+`run prescribed` uses only the selected artifact's historical calibration, so
+the evaluated run cannot calibrate or train itself. By default it paces event
+delivery at `--mult` (60× by default); use `--unpaced` for a fast offline replay.
+The runtime still receives events in timestamp order through the same
+`process_event()` / `advance_time()` implementation used for live input.
+
+## Legacy current-run workflow
 
 The simulator writes a **completed run** into:
 
