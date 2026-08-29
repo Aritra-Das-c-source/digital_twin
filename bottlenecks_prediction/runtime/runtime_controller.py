@@ -314,11 +314,14 @@ class DigitalTwinRuntimeController:
 
         self.station_to_corridor: dict[str, CorridorDefinition] = {}
         self.upstream_to_corridor: dict[str, CorridorDefinition] = {}
+        self.downstream_to_corridor: dict[str, CorridorDefinition] = {}
         for c in self.corridor_defs.values():
             for sid in c.sequence:
                 self.station_to_corridor[sid] = c
             if c.upstream_light_station is not None:
                 self.upstream_to_corridor[c.upstream_light_station] = c
+            if c.downstream_light_station is not None:
+                self.downstream_to_corridor[c.downstream_light_station] = c
 
         units_df = pd.read_csv(units_csv)
         required_units = {"unit_id", "vehicle_model"}
@@ -734,7 +737,10 @@ class DigitalTwinRuntimeController:
             and sid == corridor.first_station
             and typ == "PROCESSING_STARTED"
         )
-        if is_upstream_entry or is_line_start_fallback:
+        is_simulator_boundary_entry = (
+            sid == corridor.first_station and typ == "DARK_ZONE_ENTERED"
+        )
+        if is_upstream_entry or is_line_start_fallback or is_simulator_boundary_entry:
             vid = self._require_dark_vehicle(event)
             if vid not in self.corridor_bridge.active:
                 self.corridor_bridge.enter(vid, corridor.zone_id, t_s)
@@ -742,7 +748,12 @@ class DigitalTwinRuntimeController:
                     self._schedule_tick("corridor", vid, t_s + self.prediction_interval_s)
             return self._new_dark_packets(mark)
 
-        if sid == corridor.last_station and typ == "PROCESSING_COMPLETED":
+        is_simulator_boundary_exit = (
+            corridor.downstream_light_station is not None
+            and sid == corridor.downstream_light_station
+            and typ == "DARK_ZONE_EXITED"
+        )
+        if (sid == corridor.last_station and typ == "PROCESSING_COMPLETED") or is_simulator_boundary_exit:
             vid = self._require_dark_vehicle(event)
             exact = self._fire_exact_tick_for_vehicle("corridor", vid, t_s)
             # Reset the collector mark so the exact-time tick is not returned twice.
@@ -783,6 +794,16 @@ class DigitalTwinRuntimeController:
 
         packets = self.advance_time(t_ms, include_equal=False)
         sid = str(e["station_id"])
+        typ = str(e["event_type"])
+
+        # The C++ simulator represents a hidden corridor with its public
+        # DARK_ZONE_ENTERED/DARK_ZONE_EXITED boundary records. They are control
+        # boundaries, not ordinary LIGHT station observations.
+        if typ == "DARK_ZONE_EXITED":
+            corridor = self.downstream_to_corridor.get(sid)
+            if corridor is not None:
+                packets.extend(self._route_corridor(e, corridor))
+                return packets
 
         if sid not in self.dark_station_ids:
             # Zero-buffer / otherwise ineligible stations stay in the event flow

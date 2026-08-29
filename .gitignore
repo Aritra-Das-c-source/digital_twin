@@ -2,3 +2,9 @@
 dark_zone/*.db
 dark_zone/historical_dwell.csv
 __pycache__/
+simulation/training/generated/
+simulation/training/runs/
+bottlenecks_prediction/factory_models/
+.digital_twin/
+.pytest-tmp/
+predictions/

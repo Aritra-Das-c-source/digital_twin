@@ -228,10 +228,17 @@ def load_manual_checks_as_andon_events(
     manual_checks_csv: str,
     units_csv: str,
     dark_zone_station_ids: Optional[set] = None,
+    station_events_csv: Optional[str] = None,
 ) -> list[DarkZoneEvent]:
     """
     Layer 5 adapter: manual_checks.csv (station_id, unit_id, timestamp_ms,
-    check_type, result) -> ANDON_SCAN events.
+    check_type, result) -> ANDON_SCAN events.  ``unit_id`` is required:
+    ANDON evidence is vehicle-specific and cannot be routed without it.
+
+    Older simulator runs may contain anonymous manual checks.  They cannot be
+    turned into a vehicle-specific event without inventing an identity, so
+    they are excluded with a precise source diagnostic.  New simulator output
+    provides ``unit_id`` directly.
 
     Data-verified behavior (checked against real run_001 output): the
     VISUAL_ALIGNMENT check fires exactly at PROCESSING_COMPLETED for every
@@ -260,16 +267,35 @@ def load_manual_checks_as_andon_events(
             print(f"(Filtered out {dropped} manual_checks row(s) at non-dark-zone stations.)")
 
     events: list[DarkZoneEvent] = []
-    for row in mc_df.itertuples(index=False):
+    rejected_anonymous_rows = 0
+    for source_index, row in mc_df.iterrows():
+        unit_id = row["unit_id"]
+        if pd.isna(unit_id) or not str(unit_id).strip():
+            rejected_anonymous_rows += 1
+            if rejected_anonymous_rows == 1:
+                available_fields = sorted(str(field) for field in row.index)
+                print(
+                    "Skipping unrouteable replay evidence at creation: "
+                    f"source_file={manual_checks_csv!r}, row/index={source_index!r}, "
+                    "event_type='ANDON_SCAN', "
+                    f"station={row.get('station_id')!r}, available_fields={available_fields!r}, "
+                    f"unit_id={row.get('unit_id')!r}"
+                )
+            continue
         events.append(DarkZoneEvent(
             event_type=EventType.ANDON_SCAN,
-            vehicle_id=row.unit_id,
-            station_id=row.station_id,
-            ts=row.timestamp_ms / 1000.0,
-            variant=variant_lookup.get(row.unit_id),
+            vehicle_id=str(unit_id),
+            station_id=row["station_id"],
+            ts=row["timestamp_ms"] / 1000.0,
+            variant=variant_lookup.get(unit_id),
             checkpoint_progress=1.0,
-            payload={"check_type": row.check_type, "result": row.result},
+            payload={"check_type": row["check_type"], "result": row["result"]},
         ))
+    if rejected_anonymous_rows:
+        print(
+            f"(Skipped {rejected_anonymous_rows} manual_checks row(s) without unit_id; "
+            "they cannot be routed as vehicle-specific ANDON evidence.)"
+        )
     return events
 
 
@@ -381,6 +407,7 @@ def load_checkpoint_events(
     and hides a real upstream bug behind a normal-looking noise category.
     """
     ce_df = pd.read_csv(checkpoint_events_csv)
+    ce_df["_source_index"] = ce_df.index
     units_df = pd.read_csv(units_csv)
     variant_lookup = dict(zip(units_df["unit_id"], units_df["vehicle_model"]))
     progress_map = load_checkpoint_progress_map(station_checkpoints_csv)
@@ -435,25 +462,37 @@ def load_checkpoint_events(
     events: list[DarkZoneEvent] = []
     unmapped_progress = 0
     unmapped_event_type: set = set()
-    for row in ce_df.itertuples(index=False):
-        mapped_type = raw_to_event_type.get(row.event_type)
+    for _, row in ce_df.iterrows():
+        mapped_type = raw_to_event_type.get(row["event_type"])
         if mapped_type is None:
-            unmapped_event_type.add(row.event_type)
+            unmapped_event_type.add(row["event_type"])
             continue  # future checkpoint types not yet supported here
 
-        progress = progress_map.get((row.station_id, row.checkpoint_id))
+        progress = progress_map.get((row["station_id"], row["checkpoint_id"]))
         if progress is None:
             unmapped_progress += 1
             continue  # checkpoint_id not found in station_checkpoints.csv — skip, don't guess
 
+        unit_id = row["unit_id"]
+        if pd.isna(unit_id) or not str(unit_id).strip():
+            available_fields = sorted(
+                str(field) for field in row.index if field != "_source_index"
+            )
+            raise ValueError(
+                "Invalid replay evidence at creation: "
+                f"source_file={checkpoint_events_csv!r}, row/index={row['_source_index']!r}, "
+                f"event_type={row['event_type']!r}, station={row['station_id']!r}, "
+                f"available_fields={available_fields!r}, unit_id={unit_id!r}"
+            )
+
         events.append(DarkZoneEvent(
             event_type=mapped_type,
-            vehicle_id=row.unit_id,
-            station_id=row.station_id,
-            ts=row.timestamp_ms / 1000.0,
-            variant=variant_lookup.get(row.unit_id),
+            vehicle_id=str(unit_id),
+            station_id=row["station_id"],
+            ts=row["timestamp_ms"] / 1000.0,
+            variant=variant_lookup.get(unit_id),
             checkpoint_progress=progress,
-            payload={"checkpoint_id": row.checkpoint_id},
+            payload={"checkpoint_id": row["checkpoint_id"]},
         ))
 
     if unmapped_progress:
@@ -465,5 +504,3 @@ def load_checkpoint_events(
               f"Add them to raw_to_event_type if these are legitimate.")
 
     return events
-
-

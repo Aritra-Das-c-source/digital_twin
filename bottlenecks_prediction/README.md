@@ -1,6 +1,62 @@
 # Final Bottleneck Prediction Pipeline
 
-## Production workflow
+## Factory-specific training and operations
+
+The canonical training input is the simulator's completed run directory tree:
+
+```text
+simulation/training/runs/run_0001/
+simulation/training/runs/run_0002/
+...
+```
+
+From the repository root, start the cross-platform interactive Python shell:
+
+```powershell
+py cli.py
+```
+
+On macOS/Linux, use `python3 cli.py`. The interactive prompt accepts the same
+subcommands shown below, while non-interactive commands remain suitable for
+scripts and CI:
+
+```powershell
+py cli.py factories register factory-a simulation/config/factory.json
+py cli.py generate --count 20
+py cli.py simulate
+py cli.py factories configure factory-a --stations simulation/training/runs/run_0001/stations.csv
+py cli.py train factory-a --factory-id factory-a
+py cli.py models list
+py cli.py models select factory-a
+py cli.py run prescribed --run-dir simulation/training/runs/run_0001 --output predictions.jsonl --unpaced
+```
+
+`factories configure` saves the configured-stations path in
+`.digital_twin/factories.json`; training with `--factory-id` uses that registered
+factory and its configuration. `factories delete --force` removes only the
+registry entry, never the factory definition or configuration file.
+
+`train` reads those run folders in place, builds only the frozen 28-feature
+bottleneck dataset, starts from the protected initial/base XGBoost state, and
+publishes `factory_models/<factory-id>/`. Each artifact has its own bundle,
+feature contract/category levels/threshold, configured-stations topology, and
+DARK historical calibration when the factory has DARK zones. Factories with no
+DARK zones are valid: no dwell or corridor calibration is created or required.
+It deliberately excludes runtime queues, PF state,
+recent observations, output predictions, and raw CSV copies.
+
+The selected model is only a pointer in `factory_models/selected_model.json`.
+Selecting a different artifact never modifies either model. The `base` model is
+protected; deleting a run or factory artifact requires `--force` and the shell
+will never delete `base`.
+
+`run prescribed` uses only the selected artifact's historical calibration, so
+the evaluated run cannot calibrate or train itself. By default it paces event
+delivery at `--mult` (60× by default); use `--unpaced` for a fast offline replay.
+The runtime still receives events in timestamp order through the same
+`process_event()` / `advance_time()` implementation used for live input.
+
+## Legacy current-run workflow
 
 The simulator writes a **completed run** into:
 
@@ -72,7 +128,7 @@ For DARK stations, `run_current.py` builds `historical_dwell.csv` and corridor-r
 ## Tests
 
 ```bash
-python -m pytest tests -q
+py -m pytest tests -q
 ```
 
 Current packaged suite: **13 tests**.

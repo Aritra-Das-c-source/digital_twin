@@ -32,6 +32,7 @@ if __package__ in (None, ""):
 
 from runtime.runtime_controller import DigitalTwinRuntimeController
 from ml.bottleneck_model_runtime import BottleneckModelRuntime, BottleneckPrediction
+from runtime.event_source import SequentialEventSource
 
 
 class DigitalTwinBottleneckPipeline:
@@ -88,6 +89,18 @@ class DigitalTwinBottleneckPipeline:
         """Emit/scored Dark PF heartbeats due up to timestamp_ms."""
         feature_packets = self.controller.advance_time(timestamp_ms)
         return self.model.predict_packets(feature_packets)
+
+    def process_source(self, source: SequentialEventSource) -> list[BottleneckPrediction]:
+        """Consume any already ordered source through the one live inference path.
+
+        CSV replay, a simulator callback, and a future plant connector all use
+        this method.  Source adapters own ordering; this pipeline never performs
+        retrospective reordering or feature reconstruction.
+        """
+        predictions: list[BottleneckPrediction] = []
+        for event in source:
+            predictions.extend(self.process_event(event))
+        return predictions
 
     def summary(self) -> dict[str, Any]:
         return {
