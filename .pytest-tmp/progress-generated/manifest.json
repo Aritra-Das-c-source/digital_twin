@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "factory": "C:\\Projects\\digital_twin\\simulation\\config\\factory.json",
+  "generator_seed": 42,
+  "duration_ms": 1000,
+  "dark_zone_ids": [
+    "DZ_BODY_01"
+  ],
+  "runs": [
+    {
+      "run_id": "run_0001",
+      "seed": 42,
+      "scenario": "scenario_0001.json",
+      "defects": "defects_0001.json",
+      "degradation_mode": "HEALTHY",
+      "primary_station_id": 21,
+      "primary_station_name": "Glass Install",
+      "in_dark_zone": false
+    },
+    {
+      "run_id": "run_0002",
+      "seed": 43,
+      "scenario": "scenario_0002.json",
+      "defects": "defects_0002.json",
+      "degradation_mode": "GRADUAL",
+      "primary_station_id": 2,
+      "primary_station_name": "Floor Pan Weld",
+      "in_dark_zone": false
+    }
+  ]
+}

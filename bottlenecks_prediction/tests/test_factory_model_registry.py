@@ -23,7 +23,9 @@ def test_zero_dark_factory_skips_calibration(tmp_path: Path) -> None:
     configured = tmp_path / "configured_stations.csv"
     configured.write_text("station_id,sensor_coverage\nS01,HIGH\n", encoding="utf-8")
 
-    calibration = _build_dark_calibration([], configured, tmp_path / "calibration")
+    calibration = _build_dark_calibration(
+        [], configured, tmp_path / "calibration", dark_station_ids=set()
+    )
 
     assert calibration["dark_station_ids"] == []
     assert calibration["dwell"] is None

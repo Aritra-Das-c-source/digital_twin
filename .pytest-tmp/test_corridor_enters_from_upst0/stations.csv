@@ -1,0 +1,5 @@
+station_id,archetype,base_cycle_time_ms,cycle_time_std_ms,buffer_capacity,sensor_coverage
+S02,AUTOMATED,60000,6000,6,NORMAL
+S03,AUTOMATED,60000,6000,6,NONE
+S04,AUTOMATED,60000,6000,6,NONE
+S05,AUTOMATED,60000,6000,6,NORMAL

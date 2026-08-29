@@ -1,0 +1,2 @@
+event_id,timestamp_ms,event_type,station_id,unit_id,queue_length_after,previous_state,new_state,cycle_time_ms,dark_zone_id
+EV000001,0,PROCESSING_STARTED,S01,U000001,0,IDLE,PROCESSING,37711,

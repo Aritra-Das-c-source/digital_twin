@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +123,15 @@ def _defects_for(
     }
 
 
-def generate(factory_file: Path, output_directory: Path, count: int, seed: int, duration_ms: int) -> Path:
+def generate(
+    factory_file: Path,
+    output_directory: Path,
+    count: int,
+    seed: int,
+    duration_ms: int,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> Path:
     """Create scenario/defect pairs and return their manifest path."""
     if count <= 0:
         raise ValueError("count must be positive")
@@ -134,6 +143,9 @@ def generate(factory_file: Path, output_directory: Path, count: int, seed: int, 
     zone_ids = _zone_station_ids(factory, {station["id"] for station in stations})
     output_directory.mkdir(parents=True, exist_ok=True)
     manifest_runs: list[dict[str, Any]] = []
+
+    if progress:
+        progress(f"Generating {count} scenario(s) in {output_directory}...")
 
     for index in range(1, count + 1):
         run_id = f"run_{index:04d}"
@@ -166,6 +178,8 @@ def generate(factory_file: Path, output_directory: Path, count: int, seed: int, 
                 "in_dark_zone": target["id"] in zone_ids,
             }
         )
+        if progress:
+            progress(f"Generated scenario {index}/{count}: {run_id} ({mode})")
 
     manifest = {
         "schema_version": "1.0",
@@ -177,6 +191,8 @@ def generate(factory_file: Path, output_directory: Path, count: int, seed: int, 
     }
     manifest_path = output_directory / "manifest.json"
     _write_json(manifest_path, manifest)
+    if progress:
+        progress(f"Scenario generation complete: {manifest_path}")
     return manifest_path
 
 
@@ -189,7 +205,7 @@ def main() -> int:
     parser.add_argument("--duration-ms", type=int, default=28_800_000)
     args = parser.parse_args()
     try:
-        print(generate(args.factory, args.output, args.count, args.seed, args.duration_ms))
+        print(generate(args.factory, args.output, args.count, args.seed, args.duration_ms, progress=print))
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.exit(1, f"scenario generation failed: {error}\n")
     return 0

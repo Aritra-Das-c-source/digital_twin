@@ -1,0 +1,11 @@
+{
+  "randomSeed": 43,
+  "durationMs": 1000,
+  "degradation": [
+    {
+      "stationId": 2,
+      "scenario": "GRADUAL",
+      "initialLevel": 0.091
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "threshold": 1.109538784634101e-12,
+  "pr_auc": 0.7803318420547458,
+  "roc_auc": 0.9520857180258591,
+  "brier": 0.05398419871926308,
+  "balanced_accuracy": 0.8968584380991207,
+  "precision": 0.4296050648176063,
+  "recall": 0.9680706521739131,
+  "f1": 0.5951138024639799,
+  "f2": 0.7740358500814775,
+  "tn": 17919,
+  "fp": 3784,
+  "fn": 94,
+  "tp": 2850
+}
+Saved model artifacts to: C:\Projects\digital_twin\.pytest-tmp\dark-models\.dark-factory.staging-a873b57dd12d411c81420ca4cd87dd65\model

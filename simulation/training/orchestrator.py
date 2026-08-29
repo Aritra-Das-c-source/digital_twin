@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,14 +29,25 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def run_generated(
-    simulator: Path, factory: Path, generated_directory: Path, output_directory: Path, fail_fast: bool
+    simulator: Path,
+    factory: Path,
+    generated_directory: Path,
+    output_directory: Path,
+    fail_fast: bool,
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> Path:
     manifest = _read_json(generated_directory / "manifest.json")
     output_directory.mkdir(parents=True, exist_ok=True)
     outcomes: list[dict[str, Any]] = []
-    for run in manifest.get("runs", []):
+    runs = manifest.get("runs", [])
+    if progress:
+        progress(f"Running {len(runs)} simulator scenario(s) with {simulator}...")
+    for index, run in enumerate(runs, start=1):
         run_id = run["run_id"]
         run_directory = output_directory / run_id
+        if progress:
+            progress(f"Simulator run {index}/{len(runs)} started: {run_id}")
         command = [
             str(simulator),
             "--factory",
@@ -64,6 +76,9 @@ def run_generated(
                 "status": "completed" if return_code == 0 else "failed",
             }
         )
+        if progress:
+            state = "completed" if return_code == 0 else f"failed (exit {return_code})"
+            progress(f"Simulator run {index}/{len(runs)} {state}: {run_id}")
         if return_code != 0 and fail_fast:
             break
     run_manifest = {"schema_version": "1.0", "factory": str(factory.resolve()), "runs": outcomes}
@@ -71,6 +86,8 @@ def run_generated(
     _write_json(result_path, run_manifest)
     if any(outcome["status"] == "failed" for outcome in outcomes):
         raise RuntimeError(f"{sum(item['status'] == 'failed' for item in outcomes)} simulator run(s) failed")
+    if progress:
+        progress(f"Simulator batch complete: {result_path}")
     return result_path
 
 
@@ -101,12 +118,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "generate":
-            print(generate(args.factory, args.generated, args.count, args.seed, args.duration_ms))
+            print(generate(args.factory, args.generated, args.count, args.seed, args.duration_ms, progress=print))
         elif args.command == "run":
-            print(run_generated(args.simulator, args.factory, args.generated, args.output, args.fail_fast))
+            print(run_generated(args.simulator, args.factory, args.generated, args.output, args.fail_fast, progress=print))
         else:
-            generate(args.factory, args.generated, args.count, args.seed, args.duration_ms)
-            print(run_generated(args.simulator, args.factory, args.generated, args.output, args.fail_fast))
+            generate(args.factory, args.generated, args.count, args.seed, args.duration_ms, progress=print)
+            print(run_generated(args.simulator, args.factory, args.generated, args.output, args.fail_fast, progress=print))
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         parser.exit(1, f"orchestration failed: {error}\n")
     return 0

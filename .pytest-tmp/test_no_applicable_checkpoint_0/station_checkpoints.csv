@@ -1,0 +1,2 @@
+station_id,checkpoint_id,checkpoint_type,nominal_progress_fraction,read_reliability,false_positive_rate
+S13,CP1,RFID,0.5,1.0,0.0
