@@ -189,8 +189,7 @@ void Simulation::emitObservableData(const Station &s, UnitId id)
                 fail = std::max(fail, found->second);
         std::bernoulli_distribution d(fail);
         output.writeManualCheck(
-            currentTime, s.id,
-            observationPolicy.zoneFor(s.id) ? std::optional<UnitId>{} : std::optional<UnitId>{id},
+            currentTime, s.id, std::optional<UnitId>{id},
             "VISUAL_ALIGNMENT", d(rng) ? "FAIL" : "PASS");
     }
     if (s.archetype == "INSPECTION")

@@ -446,7 +446,10 @@ def _prepare_replay_evidence(
     if manual_checks is not None:
         evidence.extend(
             helpers["load_manual_checks_as_andon_events"](
-                str(manual_checks), str(units_csv), dark_station_ids
+                str(manual_checks),
+                str(units_csv),
+                dark_station_ids,
+                station_events_csv=str(events_csv),
             )
         )
 

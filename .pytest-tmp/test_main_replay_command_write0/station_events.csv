@@ -1,4 +1,0 @@
-event_id,timestamp_ms,event_type,station_id,unit_id,queue_length_after,previous_state,new_state,cycle_time_ms
-EV001,0,UNIT_ARRIVED,S02,U1,1,IDLE,QUEUED,
-EV002,10000,PROCESSING_STARTED,S02,U1,0,QUEUED,PROCESSING,
-EV003,44000,PROCESSING_COMPLETED,S02,U1,0,PROCESSING,IDLE,34000.0

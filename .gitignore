@@ -6,3 +6,5 @@ simulation/training/generated/
 simulation/training/runs/
 bottlenecks_prediction/factory_models/
 .digital_twin/
+.pytest-tmp/
+predictions/

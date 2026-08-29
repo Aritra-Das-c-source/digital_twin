@@ -1,3 +1,0 @@
-station_id,unit_id,timestamp_ms,event_type
-S05,U1,1000,PROCESSING_STARTED
-S05,U1,2000,PROCESSING_COMPLETED

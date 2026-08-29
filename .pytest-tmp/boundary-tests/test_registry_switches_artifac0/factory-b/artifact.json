@@ -1,1 +1,0 @@
-{"model_id": "factory-b", "paths": {"model_bundle": "model/bottleneck_model_bundle.joblib", "xgboost_model": "model/bottleneck_xgboost.json", "configured_stations": "configured_stations.csv", "historical_dwell": "calibration/historical_dwell.csv"}}
