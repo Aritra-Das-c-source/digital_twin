@@ -255,6 +255,7 @@ def train_factory_model(
     model_id: str,
     factory_json: str | Path,
     runs_root: str | Path,
+    configured_stations: str | Path | None = None,
     root: str | Path = DEFAULT_ARTIFACT_ROOT,
     seed: int = 42,
     threshold_objective: str = "f2",
@@ -277,8 +278,14 @@ def train_factory_model(
     staging = store / f".{safe_id}.staging-{uuid.uuid4().hex}"
     try:
         staging.mkdir()
-        first_stations = runs[0] / "stations.csv"
-        configured = configure_factory(factory, first_stations, staging / "configured_stations.csv")
+        configured = staging / "configured_stations.csv"
+        if configured_stations is None:
+            configure_factory(factory, runs[0] / "stations.csv", configured)
+        else:
+            source_configured = Path(configured_stations).expanduser().resolve()
+            if not source_configured.is_file():
+                raise FileNotFoundError(f"Configured stations CSV not found: {source_configured}")
+            shutil.copy2(source_configured, configured)
         derived = materialize(runs_root, staging / "derived")
         model_dir = staging / "model"
         trainer = ROOT / "ml" / "bottleneck_model" / "train_bottleneck_xgboost.py"
@@ -321,7 +328,7 @@ def train_factory_model(
             "training": {"runs_root": str(Path(runs_root).expanduser().resolve()), "run_count": len(runs), "run_ids": [run.name for run in runs], "seed": seed, "threshold_objective": threshold_objective, "metrics": metrics},
             "calibration": calibration,
             "paths": paths,
-            "state_boundary": {"included": "model, feature contract/category mappings, threshold, configured station topology, and DARK historical calibration", "excluded": "runtime queues, particle filters, recent observations, clock state, raw run CSVs, and predictions"},
+            "state_boundary": {"included": "model, feature contract/category mappings, threshold, configured station topology, and DARK historical calibration when DARK stations exist", "excluded": "runtime queues, particle filters, recent observations, clock state, raw run CSVs, and predictions"},
         }
         _write_json(staging / ARTIFACT_FILE, manifest)
         shutil.rmtree(staging / "derived")  # Derived features are reproducible from the source runs.

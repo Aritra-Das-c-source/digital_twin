@@ -16,6 +16,21 @@ from factory_models import (
 )
 
 
+def test_zero_dark_factory_skips_calibration(tmp_path: Path) -> None:
+    """A LIGHT-only factory must not need, import, or emit DARK calibration."""
+    from factory_models import _build_dark_calibration
+
+    configured = tmp_path / "configured_stations.csv"
+    configured.write_text("station_id,sensor_coverage\nS01,HIGH\n", encoding="utf-8")
+
+    calibration = _build_dark_calibration([], configured, tmp_path / "calibration")
+
+    assert calibration["dark_station_ids"] == []
+    assert calibration["dwell"] is None
+    assert calibration["corridor_residence"] is None
+    assert not (tmp_path / "calibration").exists()
+
+
 def _factory_artifact(root: Path, model_id: str) -> Path:
     directory = root / model_id
     (directory / "model").mkdir(parents=True)

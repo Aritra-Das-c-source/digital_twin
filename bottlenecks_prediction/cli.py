@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -34,6 +35,25 @@ from factory_models import (  # noqa: E402
 )
 from simulation.training.orchestrator import run_generated  # noqa: E402
 from simulation.training.scenario_generator import generate  # noqa: E402
+
+if __package__ in (None, ""):
+    from factory_registry import (  # noqa: E402
+        DEFAULT_REGISTRY,
+        delete_factory,
+        get_factory,
+        list_factories,
+        register_factory,
+        set_configured_stations,
+    )
+else:
+    from .factory_registry import (  # noqa: E402
+        DEFAULT_REGISTRY,
+        delete_factory,
+        get_factory,
+        list_factories,
+        register_factory,
+        set_configured_stations,
+    )
 
 
 DEFAULT_FACTORY = PROJECT_ROOT / "simulation" / "config" / "factory.json"
@@ -147,16 +167,48 @@ def command_models_delete(args: argparse.Namespace) -> int:
 def command_train(args: argparse.Namespace) -> int:
     if args.replace:
         _require_force(args.force, f"replace model {args.model_id!r}")
+    registered = get_factory(args.factory_id, args.registry) if args.factory_id else None
     result = train_factory_model(
         model_id=args.model_id,
-        factory_json=args.factory,
+        factory_json=registered["factory_json"] if registered else args.factory,
         runs_root=args.runs,
+        configured_stations=registered.get("configured_stations") if registered else None,
         root=args.artifact_root,
         seed=args.seed,
         threshold_objective=args.threshold_objective,
         replace=args.replace,
     )
     print(result)
+    return 0
+
+
+def command_factories_list(args: argparse.Namespace) -> int:
+    print(json.dumps(list_factories(args.registry), indent=2))
+    return 0
+
+
+def command_factories_show(args: argparse.Namespace) -> int:
+    print(json.dumps(get_factory(args.factory_id, args.registry), indent=2))
+    return 0
+
+
+def command_factories_register(args: argparse.Namespace) -> int:
+    print(json.dumps(register_factory(args.factory_id, args.factory, args.registry, replace=args.replace), indent=2))
+    return 0
+
+
+def command_factories_configure(args: argparse.Namespace) -> int:
+    entry = get_factory(args.factory_id, args.registry)
+    output = args.output or (Path(args.registry).expanduser().resolve().parent / "configurations" / entry["id"] / "configured_stations.csv")
+    configured = configure_factory(entry["factory_json"], args.stations, output)
+    print(json.dumps(set_configured_stations(entry["id"], configured, args.registry), indent=2))
+    return 0
+
+
+def command_factories_delete(args: argparse.Namespace) -> int:
+    _require_force(args.force, f"delete factory registration {args.factory_id!r}")
+    delete_factory(args.factory_id, args.registry)
+    print(f"Deleted factory registration: {args.factory_id}")
     return 0
 
 
@@ -204,6 +256,7 @@ def command_status(args: argparse.Namespace) -> int:
     print(json.dumps({
         "selected_model": selected_model_id(args.artifact_root),
         "models": records,
+        "factories": list_factories(args.registry),
         "default_factory": str(DEFAULT_FACTORY),
         "default_runs": str(DEFAULT_RUNS),
         "simulator": str(DEFAULT_SIMULATOR),
@@ -220,6 +273,33 @@ def build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--stations", type=Path, required=True)
     configure.add_argument("--output", type=Path, required=True)
     configure.set_defaults(func=command_configure)
+
+    factories = sub.add_parser("factories", help="Register factory definitions and retain their station configuration")
+    factories_sub = factories.add_subparsers(dest="factories_command", required=True)
+    factories_list = factories_sub.add_parser("list", help="List registered factories")
+    factories_list.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    factories_list.set_defaults(func=command_factories_list)
+    factories_show = factories_sub.add_parser("show", help="Show one registered factory")
+    factories_show.add_argument("factory_id")
+    factories_show.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    factories_show.set_defaults(func=command_factories_show)
+    factories_register = factories_sub.add_parser("register", help="Register a factory.json definition")
+    factories_register.add_argument("factory_id")
+    factories_register.add_argument("factory", type=Path)
+    factories_register.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    factories_register.add_argument("--replace", action="store_true")
+    factories_register.set_defaults(func=command_factories_register)
+    factories_configure = factories_sub.add_parser("configure", help="Create and record configured stations for a registered factory")
+    factories_configure.add_argument("factory_id")
+    factories_configure.add_argument("--stations", type=Path, required=True)
+    factories_configure.add_argument("--output", type=Path)
+    factories_configure.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    factories_configure.set_defaults(func=command_factories_configure)
+    factories_delete = factories_sub.add_parser("delete", help="Remove a factory registration (does not delete its files)")
+    factories_delete.add_argument("factory_id")
+    factories_delete.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
+    factories_delete.add_argument("--force", action="store_true")
+    factories_delete.set_defaults(func=command_factories_delete)
 
     generate_parser = sub.add_parser("generate", help="Generate factory-specific random training/test scenarios")
     generate_parser.add_argument("--factory", type=Path, default=DEFAULT_FACTORY)
@@ -262,6 +342,8 @@ def build_parser() -> argparse.ArgumentParser:
     train = sub.add_parser("train", help="Train and publish one immutable factory model artifact")
     train.add_argument("model_id")
     train.add_argument("--factory", type=Path, default=DEFAULT_FACTORY)
+    train.add_argument("--factory-id", help="Use the factory.json registered under this factory ID")
+    train.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     train.add_argument("--runs", type=Path, default=DEFAULT_RUNS)
     train.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     train.add_argument("--seed", type=int, default=42)
@@ -299,12 +381,50 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="Show selected model and discovered default paths")
     status.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
+    status.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     status.set_defaults(func=command_status)
+    shell = sub.add_parser("shell", help="Start the interactive, cross-platform Python shell")
+    shell.set_defaults(func=lambda _: interactive_shell(parser))
     return parser
+
+
+def interactive_shell(parser: argparse.ArgumentParser) -> int:
+    """Run a small command shell without relying on PowerShell, bash, or cmd.exe."""
+    print("Digital Twin shell. Type 'help' for commands, or 'quit' to exit.")
+    while True:
+        try:
+            line = input("digital-twin> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+        if line.lower() in {"quit", "exit"}:
+            return 0
+        if line.lower() in {"help", "?"}:
+            parser.print_help()
+            continue
+        try:
+            # Forward-slash paths work on every supported platform and POSIX
+            # tokenisation gives quoted names the same behaviour everywhere.
+            args = parser.parse_args(shlex.split(line))
+            if args.command == "shell":
+                print("Already in the interactive shell.")
+            else:
+                args.func(args)
+        except SystemExit:
+            # argparse has already printed a concise command-specific error.
+            continue
+        except Exception as error:
+            print(f"ERROR: {error}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
+    if argv is not None and not argv:
+        return interactive_shell(parser)
+    if argv is None and len(sys.argv) == 1:
+        return interactive_shell(parser)
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))

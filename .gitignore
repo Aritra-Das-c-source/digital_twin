@@ -5,3 +5,4 @@ __pycache__/
 simulation/training/generated/
 simulation/training/runs/
 bottlenecks_prediction/factory_models/
+.digital_twin/
