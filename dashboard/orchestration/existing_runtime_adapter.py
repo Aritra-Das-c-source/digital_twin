@@ -43,10 +43,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 #: The runtime labels stations as ``S{id + 1}``: factory station id 0 is ``S01``.
-#: Verified against a completed run's ``stations.csv`` and ``dz.csv``.
-def station_runtime_label(station_id: int) -> str:
-    """Runtime station label for a ``factory.json`` station id."""
-    return f"S{int(station_id) + 1:02d}"
+#: Verified against a completed run's ``stations.csv`` and ``dz.csv``. Defined in the
+#: domain layer and re-exported here so the mapping exists in exactly one place.
+from dashboard.domain.station import station_runtime_label  # noqa: E402
 
 
 #: Environment the existing consumers need on Windows. Several upstream modules

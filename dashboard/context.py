@@ -16,12 +16,15 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dashboard.analytics.service import AnalyticsService
 from dashboard.config import DashboardConfig, load_config
 from dashboard.domain.run import Run
 from dashboard.factory.manager import FactoryState, FactoryStatus, ensure_factory, factory_state
+from dashboard.ingestion.analytics_ingestor import AnalyticsIngestor
 from dashboard.ingestion.run_ingestor import RunIngestor
 from dashboard.orchestration.existing_runtime_adapter import ExistingRuntimeAdapter
 from dashboard.orchestration.run_manager import RunManager, RunReadiness
+from dashboard.storage.analytics_repository import AnalyticsRepository
 from dashboard.storage.database import DashboardDatabase
 from dashboard.storage.repositories import RunRepository
 
@@ -41,6 +44,9 @@ class DashboardContext:
     repository: RunRepository | None = None
     run_manager: RunManager | None = None
     ingestor: RunIngestor | None = None
+    #: The only data boundary the views are allowed to call. None when the database is
+    #: unavailable, which every view treats as an empty state rather than an error.
+    analytics: AnalyticsService | None = None
     notices: list[str] = field(default_factory=list)
 
     # -- derived state ----------------------------------------------------------------
@@ -117,10 +123,18 @@ def build_context(
             notices.append(f"Dashboard database unavailable: {error}")
             logger.warning("dashboard database unavailable: %s", error)
 
+    analytics: AnalyticsService | None = None
     if database_ready:
         repository = RunRepository(database)
+        analytics_repository = AnalyticsRepository(database)
         run_manager = RunManager(config, adapter, repository)
-        ingestor = RunIngestor(config, repository, adapter)
+        ingestor = RunIngestor(
+            config,
+            repository,
+            adapter,
+            analytics=AnalyticsIngestor(analytics_repository, repository),
+        )
+        analytics = AnalyticsService(repository, analytics_repository)
     else:
         run_manager = RunManager(config, adapter, None)
 
@@ -134,6 +148,7 @@ def build_context(
         repository=repository,
         run_manager=run_manager,
         ingestor=ingestor,
+        analytics=analytics,
         notices=notices,
     )
 

@@ -20,10 +20,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dashboard.config import DashboardConfig
 from dashboard.domain.run import Run, RunStatus
@@ -38,6 +38,9 @@ from dashboard.ingestion.runtime_reader import (
 )
 from dashboard.orchestration.existing_runtime_adapter import ExistingRuntimeAdapter
 from dashboard.storage.repositories import RunRepository
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle avoidance only
+    from dashboard.ingestion.analytics_ingestor import AnalyticsIngestor
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +62,31 @@ class IngestionResult:
 
     ingested: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
 
     @property
     def count(self) -> int:
         return len(self.ingested)
+
+
+@dataclass(frozen=True)
+class ClearResult:
+    """What Clear History removed, so the UI can report it exactly.
+
+    Only rows in the dashboard's own SQLite file. Simulator run directories, prediction
+    streams, health artifacts, factory configuration and model artifacts are never
+    touched -- that is the property that makes this database disposable.
+    """
+
+    removed: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def total(self) -> int:
+        return sum(self.removed.values())
+
+    @property
+    def tables(self) -> tuple[str, ...]:
+        return tuple(sorted(self.removed))
 
 
 def factory_fingerprint(factory_path: str | Path) -> str | None:
@@ -137,10 +161,14 @@ class RunIngestor:
         config: DashboardConfig,
         repository: RunRepository,
         adapter: ExistingRuntimeAdapter | None = None,
+        analytics: "AnalyticsIngestor | None" = None,
     ):
         self.config = config
         self.repository = repository
         self.adapter = adapter or ExistingRuntimeAdapter(config.project_root)
+        #: Optional so a caller with only run history still works; when present, every
+        #: ingested run is also projected into the analytical read model.
+        self.analytics = analytics
 
     # -- single run --------------------------------------------------------------------
 
@@ -228,7 +256,24 @@ class RunIngestor:
                 **summaries,
             },
         )
-        return self.repository.upsert_run(run)
+        stored = self.repository.upsert_run(run)
+        self.ingest_analytics(stored)
+        return stored
+
+    def ingest_analytics(self, run: Run, *, force: bool = False):
+        """Project a recorded run into the analytical read model, if one is configured.
+
+        Kept separate from :meth:`ingest_completed_run` so run history and analytics fail
+        independently: a run whose artifacts confuse the projection still appears in
+        history, and the dashboard still starts.
+        """
+        if self.analytics is None:
+            return None
+        try:
+            return self.analytics.ingest_run(run, force=force)
+        except Exception as error:  # pragma: no cover - defensive around odd artifacts
+            logger.warning("analytics ingestion failed for %s: %s", run.run_id, error)
+            return None
 
     @staticmethod
     def _describe_scenario(metadata: dict[str, Any]) -> str:
@@ -315,3 +360,54 @@ class RunIngestor:
                 continue
             ingested.append(run.run_id)
         return IngestionResult(ingested=tuple(ingested), skipped=tuple(skipped))
+
+    # -- history maintenance --------------------------------------------------------------
+
+    def clear_history(self) -> ClearResult:
+        """*Clear Dashboard History*: empty this database, touch nothing else.
+
+        Removes run history and every derived analytical row while keeping the schema and
+        its version. Simulator run directories, ``bottleneck_predictions.jsonl``,
+        ``defect_predictions.jsonl``, ``system_health.json``, ``system_run_manifest.json``,
+        ``factory.json`` and all model artifacts are left exactly as they were -- they are
+        authoritative and this database is a cache of them.
+
+        Use it when the derived state is wrong or confusing and you want a clean slate.
+        Follow it with :meth:`clear_and_rebuild` (or the Run History rebuild control) to
+        get the same history back from the artifacts.
+        """
+        return ClearResult(removed=self.repository.db.clear_history())
+
+    def clear_and_rebuild(
+        self,
+        runs_root: str | Path | None = None,
+        *,
+        predictions_root: str | Path | None = None,
+    ) -> tuple[ClearResult, IngestionResult]:
+        """*Clear + Rebuild*: wipe derived state, then reconstruct it from artifacts.
+
+        Deterministic: the same artifacts on disk always produce the same database,
+        because runs are discovered in completion order and every projection replaces
+        rather than merges. This is the operation that proves the database is disposable.
+        """
+        cleared = self.clear_history()
+        rebuilt = self.rebuild_from_artifacts(
+            runs_root, predictions_root=predictions_root, clear_existing=False
+        )
+        return cleared, rebuilt
+
+    def reingest_analytics(self, *, force: bool = True) -> IngestionResult:
+        """Re-derive analytics for every recorded run without re-reading run history.
+
+        Useful after a metric definition changes: history stays put, the derived layer is
+        rebuilt from the same artifacts.
+        """
+        ingested: list[str] = []
+        warnings: list[str] = []
+        for run in self.repository.list_runs(limit=1000):
+            result = self.ingest_analytics(run, force=force)
+            if result is None:
+                continue
+            ingested.append(run.run_id)
+            warnings.extend(result.warnings)
+        return IngestionResult(ingested=tuple(ingested), warnings=tuple(warnings))

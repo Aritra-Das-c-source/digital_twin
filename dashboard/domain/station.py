@@ -11,6 +11,17 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def station_runtime_label(station_id: int) -> str:
+    """Runtime station label for a ``factory.json`` station id.
+
+    The simulator writes station id ``N`` as ``S{N + 1}`` zero-padded to two digits
+    (``simulation/src/Output.cpp::stationKey``), and every artifact and both prediction
+    streams use that label. It is defined once, here, because getting it wrong silently
+    shifts the whole line by one station.
+    """
+    return f"S{int(station_id) + 1:02d}"
+
+
 @dataclass
 class Station:
     """One station on the configured line."""
@@ -32,6 +43,11 @@ class Station:
     def zone(self) -> str:
         """`DARK` or `LIGHT`, matching the prediction streams' `zone` field."""
         return "DARK" if self.is_dark else "LIGHT"
+
+    @property
+    def runtime_label(self) -> str:
+        """The `S12`-style identifier this station carries in every artifact."""
+        return station_runtime_label(self.id)
 
     @classmethod
     def from_factory(cls, data: dict[str, Any], dark_zones: list[dict[str, Any]] | None = None) -> Station:
