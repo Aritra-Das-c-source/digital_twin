@@ -47,24 +47,31 @@ class TestColdStart:
         app = _launch(tmp_path, monkeypatch)
         assert not app.exception, [str(e) for e in app.exception]
 
-    def test_shows_the_product_name_and_roles(self, tmp_path: Path, monkeypatch):
+    def test_shows_the_product_name_and_navigation(self, tmp_path: Path, monkeypatch):
         app = _launch(tmp_path, monkeypatch)
         assert any("DIGITALTWIN.AI" in str(t.value) for t in app.title)
-        roles = app.sidebar.selectbox[0]
-        assert list(roles.options) == ["Supervisor", "Plant Manager", "Leadership"]
+        pages = app.sidebar.radio[0]
+        assert "Live Factory" in pages.options
+        assert "Run Factory" in pages.options
 
-    def test_offers_every_navigation_placeholder(self, tmp_path: Path, monkeypatch):
+    def test_offers_the_product_navigation(self, tmp_path: Path, monkeypatch):
         app = _launch(tmp_path, monkeypatch)
         pages = list(app.sidebar.radio[0].options)
         for expected in (
-            "Live Twin",
+            "Live Factory",
+            "Overview",
             "Bottlenecks",
             "Defects",
-            "Sensor Coverage",
-            "What-If",
+            "Sensors",
             "Run History",
+            "Business Case",
+            "Runtime Health",
+            "Configuration",
+            "Run Factory",
         ):
             assert expected in pages
+        assert "What-If" not in pages
+        assert "Supervisor" not in pages
 
     def test_reports_a_missing_factory_without_crashing(self, tmp_path: Path, monkeypatch):
         app = _launch(tmp_path, monkeypatch, DT_DASHBOARD_ALLOW_DEMO_FACTORY="false")
@@ -109,11 +116,11 @@ class TestRunHistoryView:
 
     def test_sensor_coverage_renders_from_the_factory(self, tmp_path: Path, monkeypatch):
         app = _launch(tmp_path, monkeypatch)
-        app.sidebar.radio[0].set_value("Sensor Coverage").run()
+        app.sidebar.radio[0].set_value("Sensors").run()
         assert not app.exception, [str(e) for e in app.exception]
 
     @pytest.mark.parametrize(
-        "page", ["Live Twin", "Bottlenecks", "Defects", "What-If", "Overview"]
+        "page", ["Live Factory", "Bottlenecks", "Defects", "Sensors", "Overview", "Business Case"]
     )
     def test_placeholder_pages_render(self, tmp_path: Path, monkeypatch, page: str):
         app = _launch(tmp_path, monkeypatch)

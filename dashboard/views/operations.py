@@ -1,165 +1,224 @@
-"""Artifact-backed stakeholder and analysis views for the prototype dashboard."""
+"""Operational Streamlit views over the existing analytics read model."""
 from __future__ import annotations
 
+from html import escape
 import json
-from collections import Counter, defaultdict
-from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-from dashboard.domain.station import Station
+
+def _service(context):
+    if context.analytics is None:
+        st.warning("Dashboard analytics are unavailable; the database could not be opened.")
+        return None
+    return context.analytics
 
 
-def _records(path: Path) -> list[dict[str, Any]]:
-    rows = []
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                item = json.loads(line)
-                if isinstance(item, dict): rows.append(item)
-            except json.JSONDecodeError: pass
-    except OSError: pass
-    return rows
+def _run(context, service):
+    selected = st.session_state.get("selected_run_id")
+    return (service.get_run(selected) if selected else None) or service.latest_analysed_run()
 
 
-def _run(context):
-    runs = context.run_history()
-    chosen = st.session_state.get("selected_run_id")
-    return next((r for r in runs if r.run_id == chosen), None) or (runs[0] if runs else None)
+def _require_run(context, title):
+    service = _service(context)
+    if service is None:
+        return None, None
+    run = _run(context, service)
+    if run is None:
+        st.header(title)
+        st.info("No analysed run is available. Run Factory or rebuild dashboard history from completed artifacts.")
+        return None, None
+    return service, run
 
 
-def _data(context):
-    run = _run(context)
-    if not run or not run.predictions_path: return run, [], []
-    root = Path(run.predictions_path)
-    return run, _records(root / "bottleneck_predictions.jsonl"), _records(root / "defect_predictions.jsonl")
+def _pct(value: Any) -> str:
+    return "—" if value is None else f"{float(value) * 100:.1f}%"
 
 
-def _risk(row, kind): return float(row.get(f"{kind}_risk_percent", row.get(f"{kind}_probability", 0) * 100) or 0)
-def _confidence(row): return round(float(row.get("state_confidence", 0) or 0) * 100)
-def _latest(rows, key):
-    result = {}
-    for row in rows: result[str(row.get(key, "—"))] = row
-    return result
-def _drivers(row):
-    raw = (row.get("explanation") or {}).get("top_drivers") or row.get("top_risk_drivers") or []
-    return ", ".join(str(x.get("label") or x.get("feature") or "driver") for x in raw[:3]) or "No explanation available"
+def _duration(value: Any) -> str:
+    if value is None:
+        return "—"
+    seconds = int(value) // 1000
+    return f"{seconds // 60}m {seconds % 60}s"
 
 
-def render_supervisor(context) -> None:
-    st.header("Supervisor")
-    run, bottlenecks, defects = _data(context)
-    if not run:
-        st.info("No completed run yet. Configure and run the factory above to populate the operational view."); return
-    latest_b = _latest(bottlenecks, "station_id"); latest_d = _latest(defects, "unit_id")
-    alerts = [r for r in latest_b.values() if r.get("warning")] + [r for r in latest_d.values() if r.get("warning")]
-    cols = st.columns(5)
-    cols[0].metric("Production day", run.production_day); cols[1].metric("Current run", run.run_id)
-    cols[2].metric("Flow records", len(bottlenecks)); cols[3].metric("Active alerts", len(alerts))
-    cols[4].metric("Observability", f"{sum(_confidence(x) for x in latest_b.values()) // max(len(latest_b), 1)}%")
-    top = max(alerts, key=lambda r: max(_risk(r, "bottleneck"), _risk(r, "defect")), default=None)
-    st.subheader("Most important current alert")
-    if not top: st.success("No actionable current alerts in the latest predictions.")
-    else:
-        kind = "bottleneck" if "bottleneck_probability" in top else "defect"
-        st.error(f"{kind.title()} risk {_risk(top, kind):.0f}% at {top.get('station_id', top.get('unit_id'))}")
-        a, b, c = st.columns(3); a.write("**What happened?**\nRisk crossed its runtime alert threshold."); b.write(f"**Why?**\n{_drivers(top)}"); c.write(f"**What should the operator look at?**\nInspect {top.get('station_id', 'the flagged unit')} and its queue/evidence.")
-    st.subheader("Top risky stations and units")
-    left, right = st.columns(2)
-    left.dataframe(sorted(({"Station": k, "Risk %": round(_risk(v, "bottleneck"),1), "Confidence %": _confidence(v)} for k,v in latest_b.items()), key=lambda x:x["Risk %"], reverse=True)[:3], hide_index=True, use_container_width=True)
-    right.dataframe(sorted(({"Unit": k, "Risk %": round(_risk(v, "defect"),1), "Station": v.get("station_id")} for k,v in latest_d.items()), key=lambda x:x["Risk %"], reverse=True)[:3], hide_index=True, use_container_width=True)
+def _driver(row: dict[str, Any] | None) -> str:
+    if not row:
+        return "No predictive driver available"
+    direct = row.get("top_driver") or row.get("feature") or row.get("label")
+    if direct:
+        return str(direct)
+    for key in ("risk_drivers_json", "top_drivers_json"):
+        try:
+            drivers = json.loads(row.get(key) or "[]")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(drivers, list) and drivers and isinstance(drivers[0], dict):
+            return str(drivers[0].get("feature") or drivers[0].get("label") or "Predictive contribution")
+    return "No predictive driver available"
 
 
 def render_overview(context) -> None:
-    """Prominent stakeholder mode landing view."""
-    role = st.session_state.get("role", "Supervisor")
-    if role == "Plant Manager":
-        render_plant_manager(context)
-    elif role == "Leadership":
-        render_leadership(context)
-    else:
-        render_supervisor(context)
-
-
-def render_plant_manager(context) -> None:
-    st.header("Plant Manager")
-    runs = context.run_history()
-    if not runs: st.info("Historical trends will appear after completed production days are ingested."); return
-    choice = st.selectbox("Scope", ["Current Run", "All Runs"] + [f"Production Day {r.production_day}" for r in runs])
-    scoped = runs if choice == "All Runs" else ([next(r for r in runs if r.production_day == int(choice.split()[-1]))] if choice.startswith("Production") else [runs[0]])
-    rows=[]; stations=Counter()
-    for r in scoped:
-        b=_records(Path(r.predictions_path or "") / "bottleneck_predictions.jsonl"); d=_records(Path(r.predictions_path or "") / "defect_predictions.jsonl")
-        rows.append({"Day":r.production_day,"Bottleneck alerts":sum(bool(x.get("warning")) for x in b),"Defect alerts":sum(bool(x.get("warning")) for x in d),"Prediction flow":len(b)})
-        stations.update(str(x.get("station_id")) for x in b if x.get("warning"))
-    st.metric("Simulated production days represented", len(scoped)); st.line_chart(rows, x="Day", y=["Prediction flow", "Bottleneck alerts", "Defect alerts"])
-    if stations:
-        station, count=stations.most_common(1)[0]; st.info(f"Recurring Constraint\n\nStation {station}: high bottleneck risk on {count} of {len(scoped)} simulated days.")
-    st.dataframe([{"Station":s,"Bottleneck-risk days":n} for s,n in stations.most_common()], hide_index=True, use_container_width=True)
-
-
-def render_leadership(context) -> None:
-    st.header("Leadership")
-    runs=context.run_history(); stations=Station.all_from_factory(context.factory.data or {})
-    a,b,c,d=st.columns(4); a.metric("Line count",1); b.metric("Stations",len(stations)); c.metric("Days simulated",len(runs)); d.metric("Factory coverage", f"{sum(s.sensor_coverage != 'NONE' for s in stations)/max(len(stations),1):.0%}")
-    st.subheader("Operational impact")
-    render_plant_manager(context)
-    st.subheader("Scale story")
-    st.markdown("**PILOT** — 1 LINE  \n↓  \n**PLANT** — MULTIPLE LINES  \n↓  \n**SITE** — MULTIPLE AREAS  \n↓  \n**MULTI-SITE**")
-    st.caption("Reusable factory configuration · common BASE model · modular runtime · heterogeneous sensor coverage · dashboard analytics")
-    st.subheader("Illustrative Prototype Business Impact")
-    st.caption("Simulated/illustrative only. Derived from recorded prediction activity, not plant financials.")
-    total=sum((r.metadata.get("bottleneck_stream") or {}).get("warning_count",0) for r in runs)
-    st.metric("Actionable flow signals captured", total)
+    service, run = _require_run(context, "Overview")
+    if service is None:
+        return
+    st.header("Overview")
+    metrics = service.get_run_metrics(run.run_id)
+    if not metrics:
+        st.info("This run is recorded but has no analytical projection yet. Rebuild from artifacts to populate it.")
+        return
+    st.caption(f"Production day {run.production_day} · `{run.run_id}`")
+    cols = st.columns(4)
+    cols[0].metric("Throughput", "—" if metrics["throughput_per_hour"] is None else f"{metrics['throughput_per_hour']:.1f}/h")
+    cols[1].metric("Cycle time", _duration(metrics.get("avg_lead_time_ms")))
+    cols[2].metric("Peak WIP", metrics.get("peak_wip") if metrics.get("peak_wip") is not None else "—")
+    cols[3].metric("Runtime health", metrics.get("health_status") or "Unknown")
+    cols = st.columns(3)
+    cols[0].metric("Bottleneck alerts", metrics.get("bottleneck_alert_count", 0))
+    cols[1].metric("Defect alerts", metrics.get("defect_alert_count", 0))
+    cols[2].metric("Observed coverage", _pct(metrics.get("observability_coverage")))
+    ranked = sorted(service.get_station_metrics(run.run_id), key=lambda row: row.get("peak_probability") or -1, reverse=True)[:8]
+    if ranked:
+        st.subheader("Highest station risk")
+        st.bar_chart({row["station_id"]: (row.get("peak_probability") or 0) * 100 for row in ranked})
 
 
 def render_live_twin(context) -> None:
-    st.header("Live Digital Twin")
-    _, b, _ = _data(context); latest=_latest(b,"station_id"); stations=Station.all_from_factory(context.factory.data or {})
-    if not stations: st.info("No valid factory topology available."); return
-    cards=[]
-    for s in stations:
-        key=f"S{s.id+1:02d}"; row=latest.get(key, {}); risk=_risk(row,"bottleneck")
-        cards.append({"Station":key,"Type":s.archetype,"Context":s.zone,"Coverage":s.sensor_coverage,"Risk %":round(risk,1),"Status":"ALERT" if row.get("warning") else "Flowing"})
-    st.caption("Actual factory topology; latest current-run station prediction is shown for each node.")
-    st.dataframe(cards, hide_index=True, use_container_width=True)
+    service, run = _require_run(context, "Live Factory")
+    if service is None:
+        return
+    st.header("Live Factory")
+    first, last = service.get_run_time_bounds(run.run_id)
+    at = st.slider("Simulator time (ms)", first, last, last, key="live_time") if last > first else last
+    state = service.get_live_state(run.run_id, at)
+    st.caption(f"Run `{state.run_id}` · production day {state.production_day or '—'} · simulator {state.sim_time_ms:,} ms · runtime {state.health_status or 'Unknown'}")
+    if state.health_status and state.health_status != "PASS":
+        st.warning(f"Runtime health is {state.health_status}; data may be incomplete.")
+    for notice in state.notices:
+        st.info(notice)
+    if state.is_empty:
+        st.info("No topology was ingested for this run. Rebuild dashboard history from artifacts.")
+        return
+    if not state.bottleneck_stream_available:
+        st.warning("Bottleneck stream is unavailable; no-signal is not zero risk.")
+    if not state.defect_stream_available:
+        st.warning("Defect stream is unavailable; unit risk is not available.")
+    cards = []
+    for station in state.stations:
+        queue = station.queue
+        beads = "".join("●" for _ in range(min(queue.occupancy or 0, 12))) if queue and queue.observable else "?"
+        cards.append(
+            f"<div style='display:inline-block;white-space:normal;vertical-align:top;width:178px;min-height:140px;margin:6px;padding:10px;border:2px solid #64748b;border-radius:8px'>"
+            f"<b>{escape(station.station_id)}</b><br><small>{escape(station.name)}</small><hr style='margin:6px 0'>"
+            f"Risk: <b>{escape(station.risk)}</b> {_pct(station.bottleneck_probability)}<br>"
+            f"Queue: {beads} {queue.label if queue else '—'}<br>Utilization: {_pct(station.utilization)}<br><small>{station.observability}</small></div>"
+        )
+    st.markdown("**Line view** — scroll horizontally to inspect all stations.")
+    st.markdown("<div style='overflow-x:auto;white-space:nowrap;padding-bottom:8px'>" + "".join(cards) + "</div>", unsafe_allow_html=True)
+    station_id = st.selectbox("Station details", [station.station_id for station in state.stations])
+    detail = service.get_station_detail(run.run_id, station_id, state.sim_time_ms)
+    metric = detail["metrics"] or {}
+    station = detail["station"]
+    with st.expander(f"{station_id} detail", expanded=True):
+        st.write(f"**{station.name if station else station_id}** · Peak risk {_pct(metric.get('peak_probability'))} · Average {_pct(metric.get('avg_probability'))}")
+        st.write(f"Queue {metric.get('last_queue', '—')} / {metric.get('buffer_capacity', '—')} · Utilization {_pct(metric.get('utilization'))} · Confidence {_pct(metric.get('mean_confidence'))}")
+        st.write(f"Recent alerts: {len(detail['alerts'])}")
+    units = state.units_on_line
+    if units:
+        unit_id = st.selectbox("Unit details", [unit.unit_id for unit in units])
+        unit = service.get_unit_detail(run.run_id, unit_id, state.sim_time_ms)
+        latest = unit["latest"] or {}
+        with st.expander(f"{unit_id} detail"):
+            st.write(f"Current station: {latest.get('station_id') or (unit['metrics'] or {}).get('last_station_id') or '—'} · Defect risk {_pct(latest.get('probability'))} · Confidence {_pct(latest.get('state_confidence'))}")
+            st.write(f"Recent alerts: {len(unit['alerts'])}")
+            st.caption("Predictive contributions are associated signals, not causal root-cause conclusions.")
 
 
 def render_bottlenecks(context) -> None:
-    st.header("Bottleneck Intelligence")
-    run,b,_=_data(context)
-    if not b: st.info("No bottleneck stream for the selected run."); return
-    latest=_latest(b,"station_id"); table=sorted(({"Station":k,"Risk %":round(_risk(v,"bottleneck"),1),"Alert":bool(v.get("warning")),"Confidence %":_confidence(v),"Top factors":_drivers(v)} for k,v in latest.items()),key=lambda x:x["Risk %"],reverse=True)
-    st.bar_chart({x["Station"]:x["Risk %"] for x in table}); st.dataframe(table,hide_index=True,use_container_width=True)
-    selected=st.selectbox("Station detail", [x["Station"] for x in table]); row=latest[selected]; st.write(f"Current risk: **{_risk(row,'bottleneck'):.1f}%** · Confidence: **{_confidence(row)}%** · Main factors: **{_drivers(row)}**")
+    service, run = _require_run(context, "Bottleneck Analytics")
+    if service is None:
+        return
+    st.header("Bottleneck Analytics")
+    rows = service.get_station_metrics(run.run_id)
+    if not rows or not any(row.get("prediction_count") for row in rows):
+        st.info("No bottleneck prediction stream is available for this run.")
+        return
+    table = [{"Station": r["station_id"], "Current Risk": _pct(r.get("last_probability")), "Peak Risk": _pct(r.get("peak_probability")), "Average Risk": _pct(r.get("avg_probability")), "Alerts": r.get("alert_count", 0), "Time at Risk": _duration(r.get("time_above_threshold_ms")), "Confidence": _pct(r.get("mean_confidence")), "Queue": f"{r.get('last_queue') if r.get('last_queue') is not None else '—'} / {r.get('buffer_capacity') if r.get('buffer_capacity') is not None else '—'}"} for r in rows]
+    st.dataframe(table, hide_index=True, use_container_width=True)
+    selected = st.selectbox("Risk trend for station", [r["station_id"] for r in rows])
+    history = service.get_bottleneck_history(run.run_id, selected)
+    if history:
+        st.line_chart({"Risk %": [float(row.get("probability") or 0) * 100 for row in history]})
+        st.write(f"Top predictive driver: {_driver(history[-1])}")
 
 
 def render_defects(context) -> None:
-    st.header("Defect Intelligence")
-    _,_,d=_data(context)
-    if not d: st.info("No defect stream for the selected run."); return
-    latest=_latest(d,"unit_id"); table=sorted(({"Unit":k,"Risk %":round(_risk(v,"defect"),1),"Station":v.get("station_id"),"Inspection priority": "High" if v.get("warning") else "Monitor","Confidence %":_confidence(v),"Factors":_drivers(v)} for k,v in latest.items()),key=lambda x:x["Risk %"],reverse=True)
-    st.bar_chart({x["Unit"]:x["Risk %"] for x in table[:20]}); st.dataframe(table[:50],hide_index=True,use_container_width=True)
+    service, run = _require_run(context, "Defect Analytics")
+    if service is None:
+        return
+    st.header("Defect Analytics")
+    rows = service.get_unit_metrics(run.run_id, limit=100)
+    if not rows or not any(row.get("prediction_count") for row in rows):
+        st.info("No defect prediction stream is available for this run.")
+        return
+    st.dataframe([{"Unit": r["unit_id"], "Current Risk": _pct(r.get("last_probability")), "Peak Risk": _pct(r.get("peak_probability")), "Confidence": _pct(r.get("mean_confidence")), "Current Station": r.get("last_station_id") or "—", "Warnings": r.get("warning_count", 0)} for r in rows], hide_index=True, use_container_width=True)
+    selected = st.selectbox("Unit risk detail", [r["unit_id"] for r in rows])
+    detail = service.get_unit_detail(run.run_id, selected)
+    if detail["history"]:
+        st.line_chart({"Defect risk %": [float(row.get("probability") or 0) * 100 for row in detail["history"]]})
+    st.caption("Defect risk is a unit/quality signal, distinct from station/flow bottleneck risk. Drivers are associated signals, not causes.")
 
 
 def render_sensor_coverage(context) -> None:
-    st.header("Sensor Coverage & Trust")
-    _,b,_=_data(context); latest=_latest(b,"station_id"); stations=Station.all_from_factory(context.factory.data or {})
-    if not stations: st.info("No valid factory configuration."); return
-    table=[]
-    for s in stations:
-        row=latest.get(f"S{s.id+1:02d}",{}); table.append({"Station":f"S{s.id+1:02d}","Coverage":s.sensor_coverage,"Prediction confidence":f"{_confidence(row)}%" if row else "No prediction","Zone":s.zone})
-    st.dataframe(table,hide_index=True,use_container_width=True)
-    station=st.selectbox("Station", [x["Station"] for x in table]); item=next(x for x in table if x["Station"]==station)
-    st.info(f"{station}\n\nCoverage: {item['Coverage']} · Confidence: {item['Prediction confidence']}\n\nSuggested improvement: candidate for low-cost sensing during the next maintenance window when coverage is limited.")
+    service, run = _require_run(context, "Sensor Analytics")
+    if service is None:
+        return
+    st.header("Sensor Analytics")
+    coverage = service.get_sensor_coverage(run.run_id)
+    cols = st.columns(4)
+    cols[0].metric("Stations", coverage["station_count"]); cols[1].metric("Instrumented", coverage["instrumented_count"]); cols[2].metric("Manual-only", coverage["manual_only_count"]); cols[3].metric("Unobserved", coverage["unobserved_count"])
+    st.caption("Configured sensor coverage is distinct from observed state. DARK is a low-observability corridor, not a sensor reading.")
+    st.dataframe([{"Station": item.station_id, "Name": item.name, "Configured coverage": item.sensor_coverage, "Observed state": item.observability, "Channels": ", ".join(item.channel_kinds) or "None", "Prediction confidence": _pct(item.mean_confidence)} for item in coverage["stations"]], hide_index=True, use_container_width=True)
 
 
-def render_what_if(context) -> None:
-    st.header("What-If")
-    _,b,_=_data(context); latest=_latest(b,"station_id")
-    if not latest: st.info("Run the factory to enable illustrative sensitivity analysis."); return
-    station=st.selectbox("Station",list(latest)); adjustment=st.slider("Cycle time adjustment",0,20,0)
-    baseline=_risk(latest[station],"bottleneck"); adjusted=min(100,baseline*(1+adjustment/100))
-    a,c=st.columns(2); a.metric("Baseline bottleneck risk",f"{baseline:.1f}%"); c.metric("Adjusted illustrative risk",f"{adjusted:.1f}%")
-    st.caption("Illustrative sensitivity analysis based on the current risk signal; it does not run a second simulator. Downstream stations may see queue/flow impact if this constraint persists.")
+def render_leadership(context) -> None:
+    service, run = _require_run(context, "Business Case")
+    if service is None:
+        return
+    st.header("Business Case")
+    metrics = service.get_run_metrics(run.run_id) or {}
+    cols = st.columns(4)
+    cols[0].metric("Throughput", "—" if metrics.get("throughput_per_hour") is None else f"{metrics['throughput_per_hour']:.1f}/h"); cols[1].metric("Bottleneck events", metrics.get("bottleneck_alert_count", 0)); cols[2].metric("Defect-risk events", metrics.get("defect_alert_count", 0)); cols[3].metric("Observed coverage", _pct(metrics.get("observability_coverage")))
+    st.subheader("Prediction trust")
+    st.info("Validation pending real outcomes. This prototype does not claim precision, recall, ROI, savings, or causal root causes.")
+    st.subheader("Deployment readiness")
+    st.write("Legacy-compatible configuration · isolated runtime execution · artifact-based integration · uneven-observability support · analytical read model")
+    st.subheader("Scale path")
+    st.markdown("Pilot Line  →  Plant  →  Multi-line  →  Multi-site")
+
+
+def render_runtime_health(context) -> None:
+    service, run = _require_run(context, "Runtime Health")
+    if service is None:
+        return
+    st.header("Runtime Health")
+    summary = service.get_run_summary(run.run_id)
+    metrics = (summary.metrics if summary else None) or {}
+    st.metric("Current status", metrics.get("health_status") or "Unknown")
+    if metrics.get("health_status") and metrics["health_status"] != "PASS":
+        st.warning("Runtime is degraded or incomplete; use Run History to inspect recorded artifacts.")
+    else:
+        st.success("No degraded runtime status was recorded for this run.")
+    st.dataframe((summary.ingest_sources if summary else []), hide_index=True, use_container_width=True)
+
+
+def render_configuration(context) -> None:
+    st.header("Configuration")
+    st.metric("Factory status", context.factory.status)
+    st.caption(f"Factory configuration: `{context.config.factory_path}`")
+    st.metric("Stations", context.factory.station_count)
+    st.metric("DARK zones", context.factory.dark_zone_count)
+    if context.factory.validation.warnings:
+        for warning in context.factory.validation.warnings:
+            st.warning(warning)

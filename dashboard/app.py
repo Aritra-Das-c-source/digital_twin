@@ -29,15 +29,15 @@ from dashboard.context import DashboardContext, build_context  # noqa: E402
 from dashboard.factory.manager import FactoryStatus  # noqa: E402
 from dashboard.views import (  # noqa: E402
     render_bottlenecks,
+    render_configuration,
     render_defects,
+    render_leadership,
     render_live_twin,
     render_overview,
+    render_runtime_health,
     render_run_history,
     render_sensor_coverage,
-    render_what_if,
 )
-
-ROLES = ("Supervisor", "Plant Manager", "Leadership")
 
 #: Selectable simulated-day lengths, mapped to (duration_ms, rough wall-clock estimate).
 #: The coordinated replay runs a particle filter over every event, so wall-clock time
@@ -50,13 +50,16 @@ RUN_DURATIONS: dict[str, tuple[int, str]] = {
 }
 
 PAGES = {
-    "Supervisor": render_overview,
-    "Live Twin": render_live_twin,
+    "Live Factory": render_live_twin,
+    "Overview": render_overview,
     "Bottlenecks": render_bottlenecks,
     "Defects": render_defects,
-    "Sensor Coverage": render_sensor_coverage,
-    "What-If": render_what_if,
+    "Sensors": render_sensor_coverage,
     "Run History": render_run_history,
+    "Business Case": render_leadership,
+    "Run Factory": lambda context: _render_run_factory_control(context),
+    "Runtime Health": render_runtime_health,
+    "Configuration": render_configuration,
 }
 
 _STATUS_ICON = {
@@ -135,13 +138,17 @@ def _render_sidebar(context: DashboardContext) -> str:
         _render_current_run_block(context)
         st.divider()
 
-        st.caption("Stakeholder mode")
-        role = st.radio("Stakeholder mode", ROLES, index=0, label_visibility="collapsed")
-        st.session_state["role"] = role
-
-        st.divider()
-        st.caption("Analysis")
-        page = st.radio("Analysis", list(PAGES), index=0, label_visibility="collapsed")
+        st.caption("LIVE")
+        st.caption("Live Factory")
+        st.caption("ANALYTICS")
+        st.caption("Overview · Bottlenecks · Defects · Sensors · Run History")
+        st.caption("LEADERSHIP")
+        st.caption("Business Case")
+        st.caption("FACTORY")
+        st.caption("Run Factory")
+        st.caption("SYSTEM")
+        st.caption("Runtime Health · Configuration")
+        page = st.radio("Navigation", list(PAGES), index=0, label_visibility="collapsed")
 
         st.divider()
         if context.database_ready:
@@ -291,9 +298,6 @@ def main() -> None:
 
     for notice in context.notices:
         st.info(notice)
-
-    _render_run_factory_control(context)
-    st.divider()
 
     PAGES[page](context)
 

@@ -54,7 +54,7 @@ def render_run_history(context: DashboardContext) -> None:
         hide_index=True,
     )
 
-    _render_rebuild_control(context)
+    _render_history_maintenance(context)
 
     st.subheader("Inspect a run")
     labels = {f"Day {run.production_day} — {run.run_id}": run.run_id for run in runs}
@@ -76,13 +76,13 @@ def _render_empty_state(context: DashboardContext) -> None:
     st.info("No completed production runs yet.")
     st.caption(
         "Runs appear here once the existing pipeline has produced completed run "
-        "artifacts and the dashboard has ingested them. Use RUN FACTORY above to see "
-        "the command for the next production day."
+        "artifacts and the dashboard has ingested them. Use the Run Factory page to "
+        "start the next production day."
     )
-    _render_rebuild_control(context)
+    _render_history_maintenance(context)
 
 
-def _render_rebuild_control(context: DashboardContext) -> None:
+def _render_history_maintenance(context: DashboardContext) -> None:
     """Rebuild history from artifacts — the reason the database is safe to delete."""
     if context.ingestor is None:
         return
@@ -105,6 +105,28 @@ def _render_rebuild_control(context: DashboardContext) -> None:
                 st.info("No completed run directories were found to ingest.")
             if result.skipped:
                 st.caption(f"Skipped {len(result.skipped)} incomplete director(ies).")
+
+    with st.expander("Clear Dashboard History"):
+        st.warning("This clears dashboard history only. Raw simulator/prediction artifacts are not deleted.")
+        st.caption("Factory configuration, model files, runtime artifacts, simulator outputs and prediction JSONL remain untouched.")
+        if st.button("Clear Dashboard History", type="secondary"):
+            try:
+                result = context.ingestor.clear_history()
+            except Exception as error:
+                st.error(f"Could not clear dashboard history: {error}")
+            else:
+                st.session_state.pop(SELECTED_RUN_KEY, None)
+                st.success(f"Cleared {result.total} dashboard row(s). Raw artifacts were preserved.")
+                st.rerun()
+
+        if st.button("Clear + Rebuild from artifacts"):
+            try:
+                cleared, rebuilt = context.ingestor.clear_and_rebuild()
+            except Exception as error:
+                st.error(f"Clear + rebuild failed: {error}")
+            else:
+                st.success(f"Cleared {cleared.total} dashboard row(s) and rebuilt {rebuilt.count} run(s).")
+                st.rerun()
 
 
 def _row(run: Run) -> dict[str, object]:
