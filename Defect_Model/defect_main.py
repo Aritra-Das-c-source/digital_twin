@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterator, TextIO
+from typing import Any, Iterator, TextIO, Optional
 
 import pandas as pd
 
@@ -14,8 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from output.defect_prediction_output import append_jsonl, format_prediction
-from runtime.defect_pipeline import DigitalTwinDefectPipeline
+try:  # package-safe when invoked through root cli.py
+    from .output.defect_prediction_output import append_jsonl, format_prediction
+    from .runtime.defect_pipeline import DigitalTwinDefectPipeline
+except ImportError:  # direct: python Defect_Model/defect_main.py
+    from output.defect_prediction_output import append_jsonl, format_prediction
+    from runtime.defect_pipeline import DigitalTwinDefectPipeline
 
 DEFAULT_MODEL = PROJECT_ROOT / "saved_models" / "defect_v5_models.joblib"
 DEFAULT_CONFIG = PROJECT_ROOT / "saved_models" / "defect_v5_config.json"
@@ -33,6 +37,7 @@ def build_pipeline(
     run_id: str = "LIVE",
     explain_mode: str = "warnings",
     shap_top_k: int = 3,
+    dark_adapter=None,
 ) -> DigitalTwinDefectPipeline:
     return DigitalTwinDefectPipeline(
         stations_csv=stations_csv,
@@ -43,6 +48,7 @@ def build_pipeline(
         run_id=run_id,
         explain_mode=explain_mode,
         shap_top_k=shap_top_k,
+        dark_adapter=dark_adapter,
     )
 
 
@@ -244,8 +250,8 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> int:
-    args = parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
     return int(args.func(args))
 
 

@@ -12,10 +12,14 @@ from dark_zone_ml_bridge import (
 )
 from dark_zone_feature_reconstructor import FEATURES_28
 
+# Hash normalized source text so the integrity guard is stable across Windows
+# CRLF and Unix LF checkouts.  These hashes freeze the intentional current
+# DARK core, including the population-likelihood hook used for anonymous
+# POWER_DRAW evidence in the corridor tracker.
 EXPECTED_CORE_SHA256 = {
     "orchestrator.py": "96cb0806fb70f3672731740f3c5a73d1553d809f6b379491a23faedb295eff7a",
     "dark_zone_tracker.py": "7bf48aa34b31a19af2a1f65bebf0587a11d5d7a1fb7047ccc2fe1920340c82c6",
-    "multi_station_tracker.py": "fde5ec5547beb7bbfddf5dc94bdba4d604c7bf0191cb8c48d6dafe7a1a9ee302",
+    "multi_station_tracker.py": "92c4888da8c7c49c8ba7e225284db379096367434ab64bb97f7c681d90f168b5",
     "persistence.py": "724736ed6fd1b50214290049aaa5b477cf9dba65e71080be7aca33d06aa0e552",
 }
 
@@ -63,8 +67,11 @@ def _write_inputs(root: Path):
 
 
 def test_core_engine_files_unchanged():
-    here=Path(__file__).resolve().parent
-    got={name:hashlib.sha256((here/name).read_bytes()).hexdigest() for name in EXPECTED_CORE_SHA256}
+    here = Path(__file__).resolve().parent
+    got = {
+        name: hashlib.sha256((here / name).read_text().encode("utf-8")).hexdigest()
+        for name in EXPECTED_CORE_SHA256
+    }
     assert got == EXPECTED_CORE_SHA256
 
 

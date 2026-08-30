@@ -307,7 +307,9 @@ def main():
         defect=defect_rows(r.name,st,ev,se,ma,ins,un); ds.append(defect)
         progress(f"run {run_number}/{len(runs)} {r.name}: defect complete ({len(defect)} rows; total {sum(len(x) for x in ds)} rows)")
         progress(f"run {run_number}/{len(runs)} {r.name}: bottleneck features")
-        bottleneck=bottleneck_rows(r.name,st,ev); bs.append(bottleneck)
+        # Boundary markers are runtime estimator controls, not LIGHT observations.
+        bottleneck_ev=ev.loc[~ev.event_type.astype(str).str.upper().isin({"DARK_ZONE_ENTERED","DARK_ZONE_EXITED"})].copy()
+        bottleneck=bottleneck_rows(r.name,st,bottleneck_ev); bs.append(bottleneck)
         progress(f"run {run_number}/{len(runs)} {r.name}: complete ({len(bottleneck)} bottleneck rows; total {sum(len(x) for x in bs)} rows)")
     d=pd.concat(ds,ignore_index=True); b=pd.concat(bs,ignore_index=True)
     if [x for x in d.columns if x in DEFECT_FEATURES] != DEFECT_FEATURES or len(set(d.columns)) != len(d.columns): raise RuntimeError("defect frozen feature projection is missing, reordered, or duplicated")

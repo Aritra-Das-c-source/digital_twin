@@ -55,6 +55,13 @@ def test_frozen_model_reproduces_known_reference_probability() -> None:
     )
     assert result["threshold"] == pytest.approx(0.1555924266576767)
     assert result["warning"] is False
+    assert result["best_iteration_explained"] == 78
+    assert result["probability_additivity_error"] < 1e-6
+    assert result["explained_probability"] == pytest.approx(
+        result["bottleneck_probability"], abs=1e-6
+    )
+    assert len(result["top_drivers"]) == 5
+    assert result["top_drivers"][0]["feature"] == "station_id"
 
 
 def test_event_to_dashboard_output_end_to_end(tmp_path: Path) -> None:
@@ -94,6 +101,8 @@ def test_event_to_dashboard_output_end_to_end(tmp_path: Path) -> None:
     )
     assert payload["decision_threshold"] == pytest.approx(pipeline.model.threshold)
     assert isinstance(payload["warning"], bool)
+    assert payload["explanation"]["top_drivers"]
+    assert payload["explanation"]["probability_additivity_error"] < 1e-6
 
 
 def test_main_replay_command_writes_dashboard_jsonl(tmp_path: Path) -> None:
@@ -161,3 +170,21 @@ def test_main_replay_command_writes_dashboard_jsonl(tmp_path: Path) -> None:
     assert all(line["schema_version"] == OUTPUT_SCHEMA_VERSION for line in lines)
     assert all(line["run_id"] == "CLI_TEST" for line in lines)
     assert all(line["route"] == "LIGHT" for line in lines)
+
+
+def test_bottleneck_pipeline_default_dark_seed_is_stable(tmp_path: Path) -> None:
+    stations_csv, units_csv = _write_all_light_inputs(tmp_path)
+    a = DigitalTwinBottleneckPipeline(
+        configured_stations_csv=stations_csv, units_csv=units_csv,
+        dark_zone_dir=DARK_ZONE_DIR, model_bundle_path=MODEL_BUNDLE, run_id="SEED_RUN"
+    )
+    b = DigitalTwinBottleneckPipeline(
+        configured_stations_csv=stations_csv, units_csv=units_csv,
+        dark_zone_dir=DARK_ZONE_DIR, model_bundle_path=MODEL_BUNDLE, run_id="SEED_RUN"
+    )
+    c = DigitalTwinBottleneckPipeline(
+        configured_stations_csv=stations_csv, units_csv=units_csv,
+        dark_zone_dir=DARK_ZONE_DIR, model_bundle_path=MODEL_BUNDLE, run_id="OTHER_RUN"
+    )
+    assert a.controller.random_seed == b.controller.random_seed
+    assert a.controller.random_seed != c.controller.random_seed

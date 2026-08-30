@@ -145,10 +145,20 @@ def choose_run_split(df: pd.DataFrame, seed: int = 42):
     return train_runs, val_runs, test_runs, split_kind
 
 
-def harmonize_types(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame):
+def harmonize_types(
+    train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame,
+    fixed_category_levels: dict[str, list[str]] | None = None,
+):
     category_levels = {}
     for col in CATEGORICAL_FEATURES:
-        levels = sorted(train[col].dropna().astype(str).unique().tolist())
+        observed = sorted(train[col].dropna().astype(str).unique().tolist())
+        levels = list(fixed_category_levels[col]) if fixed_category_levels else observed
+        unknown = sorted(set(observed) - set(levels))
+        if unknown:
+            raise ValueError(
+                f"Factory continuation training contains {col} categories absent from the "
+                f"protected base model: {unknown}. A new base model is required."
+            )
         category_levels[col] = levels
         for frame in (train, val, test):
             # Unseen categories in validation/test become missing; XGBoost handles missing values.
@@ -256,7 +266,18 @@ def main() -> int:
     val = data[data.run_id.isin(val_runs)].copy()
     test = data[data.run_id.isin(test_runs)].copy()
 
-    category_levels = harmonize_types(train, val, test)
+    fixed_category_levels = None
+    if args.base_model is not None:
+        base_bundle = args.base_model.parent / "bottleneck_model_bundle.joblib"
+        if not base_bundle.is_file():
+            raise FileNotFoundError(
+                f"Base category-contract bundle not found beside base model: {base_bundle}"
+            )
+        base_meta = joblib.load(base_bundle)
+        fixed_category_levels = {
+            str(k): list(v) for k, v in base_meta["category_levels"].items()
+        }
+    category_levels = harmonize_types(train, val, test, fixed_category_levels)
 
     X_train, y_train = train[BOTTLENECK_FEATURES], train[TARGET]
     X_val, y_val = val[BOTTLENECK_FEATURES], val[TARGET]
@@ -304,6 +325,9 @@ def main() -> int:
         "feature_count": len(BOTTLENECK_FEATURES),
         "features": BOTTLENECK_FEATURES,
         "categorical_features": CATEGORICAL_FEATURES,
+        "category_contract_source": (
+            "protected_base_model" if args.base_model is not None else "training_split"
+        ),
         "split_kind": split_kind,
         "train_runs": train_runs,
         "validation_runs": val_runs,
@@ -331,7 +355,7 @@ def main() -> int:
     model.save_model(args.output / "bottleneck_xgboost.json")
     joblib.dump(
         {
-            "model": model,
+            "xgboost_model": "bottleneck_xgboost.json",
             "features": BOTTLENECK_FEATURES,
             "categorical_features": CATEGORICAL_FEATURES,
             "category_levels": category_levels,

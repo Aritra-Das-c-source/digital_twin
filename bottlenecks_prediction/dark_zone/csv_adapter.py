@@ -431,26 +431,24 @@ def load_checkpoint_events(
 
         before = len(ce_df)
         ce_df = ce_df.merge(windows, on=["station_id", "unit_id"], how="left")
-        no_window = ce_df["_start_ms"].isna().sum()
-        out_of_window = ce_df[
-            (ce_df["timestamp_ms"] < ce_df["_start_ms"]) | (ce_df["timestamp_ms"] > ce_df["_end_ms"])
-        ]
-        n_out = len(out_of_window)
+        matched = ce_df["_start_ms"].notna() & ce_df["_end_ms"].notna()
+        out_mask = matched & (
+            (ce_df["timestamp_ms"] < ce_df["_start_ms"])
+            | (ce_df["timestamp_ms"] > ce_df["_end_ms"])
+        )
+        n_out = int(out_mask.sum())
 
         if n_out > 0:
-            pct = 100 * n_out / max(before - no_window, 1)
+            pct = 100 * n_out / max(int(matched.sum()), 1)
             print(f"⚠ DATA QUALITY ISSUE: {n_out} checkpoint event(s) ({pct:.0f}% of matched rows) "
-                  f"fall OUTSIDE their unit's actual entry/exit window at that station — a real "
-                  f"sensor cannot fire before arrival or after departure. This points at a "
-                  f"checkpoint-timestamp generation bug in checkpoint_events.csv, not sensor noise. "
-                  f"{'Dropping these events.' if drop_out_of_window else 'KEEPING them anyway (drop_out_of_window=False) — expect orchestrator rejections.'}")
+                  f"fall OUTSIDE their unit's directly observed station window. "
+                  f"{'Dropping only those matched-invalid events.' if drop_out_of_window else 'KEEPING them anyway.'}")
 
         if drop_out_of_window:
-            ce_df = ce_df[
-                ce_df["_start_ms"].notna()
-                & (ce_df["timestamp_ms"] >= ce_df["_start_ms"])
-                & (ce_df["timestamp_ms"] <= ce_df["_end_ms"])
-            ]
+            # IMPORTANT: unmatched evidence is not automatically invalid. Simulator
+            # schema v2.1 intentionally suppresses internal DARK processing rows,
+            # so a legitimate RFID/POWER event may have no direct station window.
+            ce_df = ce_df[~out_mask]
 
     raw_to_event_type = {
         "RFID_CHECKPOINT": EventType.RFID_CHECKPOINT,
@@ -474,23 +472,25 @@ def load_checkpoint_events(
             continue  # checkpoint_id not found in station_checkpoints.csv — skip, don't guess
 
         unit_id = row["unit_id"]
-        if pd.isna(unit_id) or not str(unit_id).strip():
+        anonymous = pd.isna(unit_id) or not str(unit_id).strip()
+        if anonymous and mapped_type != EventType.POWER_DRAW:
             available_fields = sorted(
                 str(field) for field in row.index if field != "_source_index"
             )
             raise ValueError(
-                "Invalid replay evidence at creation: "
+                "Identity checkpoint evidence is missing unit_id: "
                 f"source_file={checkpoint_events_csv!r}, row/index={row['_source_index']!r}, "
                 f"event_type={row['event_type']!r}, station={row['station_id']!r}, "
-                f"available_fields={available_fields!r}, unit_id={unit_id!r}"
+                f"available_fields={available_fields!r}"
             )
 
+        vehicle_id = "" if anonymous else str(unit_id)
         events.append(DarkZoneEvent(
             event_type=mapped_type,
-            vehicle_id=str(unit_id),
+            vehicle_id=vehicle_id,
             station_id=row["station_id"],
             ts=row["timestamp_ms"] / 1000.0,
-            variant=variant_lookup.get(unit_id),
+            variant=None if anonymous else variant_lookup.get(str(unit_id)),
             checkpoint_progress=progress,
             payload={"checkpoint_id": row["checkpoint_id"]},
         ))

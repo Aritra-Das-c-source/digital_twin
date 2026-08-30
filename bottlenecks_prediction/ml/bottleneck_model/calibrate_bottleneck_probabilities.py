@@ -35,6 +35,16 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+
+try:
+    from ..model_io import load_bottleneck_model_bundle
+except ImportError:  # Direct script execution
+    import sys
+    package_root = Path(__file__).resolve().parents[2]
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from ml.model_io import load_bottleneck_model_bundle
+
 TARGET = "y_bottleneck"
 EPS = 1e-7
 
@@ -236,7 +246,7 @@ def main() -> int:
     if not metrics_path.exists():
         raise FileNotFoundError(metrics_path)
 
-    bundle = joblib.load(model_bundle_path)
+    bundle, model, _ = load_bottleneck_model_bundle(model_bundle_path)
     training_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
 
     val_runs = list(training_metrics["validation_runs"])
@@ -254,7 +264,6 @@ def main() -> int:
     test = prepare_frame(test, bundle)
 
     features = bundle["features"]
-    model = bundle["model"]
 
     y_val = val[TARGET].to_numpy(dtype=np.int8)
     y_test = test[TARGET].to_numpy(dtype=np.int8)

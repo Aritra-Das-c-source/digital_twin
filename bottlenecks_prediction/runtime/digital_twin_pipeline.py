@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -51,7 +52,11 @@ class DigitalTwinBottleneckPipeline:
         corridor_particles: int = 3000,
         dwell_dist: str = "gamma",
         config_prior_scale: float = 1.0,
+        random_seed: Optional[int] = None,
     ):
+        if random_seed is None:
+            digest = hashlib.sha256(str(run_id).encode("utf-8")).digest()
+            random_seed = int.from_bytes(digest[:4], "big", signed=False)
         self.controller = DigitalTwinRuntimeController(
             configured_stations_csv=configured_stations_csv,
             units_csv=units_csv,
@@ -63,6 +68,7 @@ class DigitalTwinBottleneckPipeline:
             corridor_particles=corridor_particles,
             dwell_dist=dwell_dist,
             config_prior_scale=config_prior_scale,
+            random_seed=random_seed,
         )
         self.model = BottleneckModelRuntime(model_bundle_path)
 
@@ -71,24 +77,37 @@ class DigitalTwinBottleneckPipeline:
                 "Runtime controller and XGBoost model feature contracts differ"
             )
 
+    def route_event(self, event: Mapping[str, Any] | pd.Series):
+        """Route one event to feature packets without scoring them yet."""
+        return self.controller.process_event(event)
+
+    def route_evidence_event(self, event: Mapping[str, Any]):
+        """Route Dark evidence to feature packets without model inference."""
+        return self.controller.process_evidence_event(event)
+
+    def route_advance_time(self, timestamp_ms: int):
+        """Advance Dark estimators and return due feature packets."""
+        return self.controller.advance_time(timestamp_ms)
+
+    def score_packets(self, packets):
+        """Batch-score already causally ordered feature packets."""
+        return self.model.predict_packets(packets)
+
     def process_event(
         self, event: Mapping[str, Any] | pd.Series
     ) -> list[BottleneckPrediction]:
         """Consume one station event and return all predictions causally due."""
-        feature_packets = self.controller.process_event(event)
-        return self.model.predict_packets(feature_packets)
+        return self.score_packets(self.route_event(event))
 
     def process_evidence_event(
         self, event: Mapping[str, Any]
     ) -> list[BottleneckPrediction]:
         """Consume optional Dark checkpoint evidence and score resulting packets."""
-        feature_packets = self.controller.process_evidence_event(event)
-        return self.model.predict_packets(feature_packets)
+        return self.score_packets(self.route_evidence_event(event))
 
     def advance_time(self, timestamp_ms: int) -> list[BottleneckPrediction]:
         """Emit/scored Dark PF heartbeats due up to timestamp_ms."""
-        feature_packets = self.controller.advance_time(timestamp_ms)
-        return self.model.predict_packets(feature_packets)
+        return self.score_packets(self.route_advance_time(timestamp_ms))
 
     def process_source(self, source: SequentialEventSource) -> list[BottleneckPrediction]:
         """Consume any already ordered source through the one live inference path.

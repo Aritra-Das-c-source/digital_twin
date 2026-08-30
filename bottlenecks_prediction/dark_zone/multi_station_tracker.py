@@ -141,6 +141,35 @@ class MultiStationParticleFilter:
             self._systematic_resample()
 
     # ---------------- UPDATE (optional intermediate checkpoint, if any exists) ----------------
+    def checkpoint_likelihood_values(
+        self,
+        observed_station: str,
+        observed_progress: float,
+        sensor_std: float = 0.05,
+        wrong_station_floor: float = 0.02,
+    ) -> np.ndarray:
+        """Per-particle likelihood for a station/progress checkpoint."""
+        k, progress = self._current_station_and_progress()
+        target_idx = self.station_sequence.index(observed_station)
+        station_match = (k == target_idx)
+        return np.where(
+            station_match,
+            stats.norm.pdf(progress, loc=observed_progress, scale=sensor_std),
+            wrong_station_floor,
+        )
+
+    def update_likelihood_values(self, likelihood: np.ndarray) -> None:
+        """Apply already-computed non-negative particle likelihood values."""
+        lik = np.asarray(likelihood, dtype=float)
+        if lik.shape != self.weights.shape:
+            raise ValueError("checkpoint likelihood shape does not match particle weights")
+        lik = np.clip(lik, 0.0, None)
+        self.weights *= lik
+        self.weights += 1e-300
+        self.weights /= self.weights.sum()
+        if self._effective_sample_size() < self.cfg.resample_threshold * self.cfg.n_particles:
+            self._systematic_resample()
+
     def update_checkpoint(
         self,
         observed_station: str,
@@ -157,21 +186,10 @@ class MultiStationParticleFilter:
         progress) — particles believing they're at the wrong station get a
         low floor likelihood rather than exact zero, for numerical safety.
         """
-        k, progress = self._current_station_and_progress()
-        target_idx = self.station_sequence.index(observed_station)
-        station_match = (k == target_idx)
-
-        lik = np.where(
-            station_match,
-            stats.norm.pdf(progress, loc=observed_progress, scale=sensor_std),
-            wrong_station_floor,
+        lik = self.checkpoint_likelihood_values(
+            observed_station, observed_progress, sensor_std, wrong_station_floor
         )
-        self.weights *= lik
-        self.weights += 1e-300
-        self.weights /= self.weights.sum()
-
-        if self._effective_sample_size() < self.cfg.resample_threshold * self.cfg.n_particles:
-            self._systematic_resample()
+        self.update_likelihood_values(lik)
 
     # ---------------- ESTIMATE / RENDER EXPORT ----------------
     def estimate(self) -> dict:

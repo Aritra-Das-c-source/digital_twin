@@ -23,11 +23,11 @@ from typing import Any
 import pandas as pd
 
 if __package__ in (None, ""):
-    from config.configure_stations import configure_sensor_coverage
+    from config.configure_stations import configure_sensor_coverage, validate_runtime_topology_match
     from runtime.runtime_controller import derive_dark_topology
     from training.build_bottleneck_dataset import discover_runs, materialize
 else:
-    from .config.configure_stations import configure_sensor_coverage
+    from .config.configure_stations import configure_sensor_coverage, validate_runtime_topology_match
     from .runtime.runtime_controller import derive_dark_topology
     from .training.build_bottleneck_dataset import discover_runs, materialize
 
@@ -102,6 +102,12 @@ def list_models(root: str | Path = DEFAULT_ARTIFACT_ROOT) -> list[dict[str, Any]
         if not manifest.is_file():
             continue
         data = _read_json(manifest)
+        declared = str(data.get("model_id", ""))
+        if declared != directory.name:
+            raise ValueError(
+                f"Factory artifact directory/model_id mismatch: directory={directory.name!r}, "
+                f"manifest={declared!r}"
+            )
         records.append({
             "id": data["model_id"],
             "kind": "factory_trained",
@@ -140,7 +146,14 @@ def describe_model(model_id: str, root: str | Path = DEFAULT_ARTIFACT_ROOT) -> d
     manifest = directory / ARTIFACT_FILE
     if not manifest.is_file():
         raise FileNotFoundError(f"Factory model artifact not found: {model_id}")
-    return _read_json(manifest)
+    data = _read_json(manifest)
+    declared = str(data.get("model_id", ""))
+    if declared != directory.name:
+        raise ValueError(
+            f"Factory artifact directory/model_id mismatch: directory={directory.name!r}, "
+            f"manifest={declared!r}"
+        )
+    return data
 
 
 def model_paths(model_id: str | None = None, root: str | Path = DEFAULT_ARTIFACT_ROOT) -> dict[str, Path]:
@@ -202,41 +215,93 @@ def configure_factory(factory_json: str | Path, stations_csv: str | Path, output
 def _boundary_calibration_rows(
     runs: list[Path], configured: pd.DataFrame
 ) -> tuple[list[pd.DataFrame], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Recover DARK-corridor history from the simulator's public boundaries.
+    """Recover causal DARK history from public zone entry/exit boundaries.
 
-    The C++ simulator deliberately omits internal DARK processing rows.  Its
-    observable contract is a ``DARK_ZONE_ENTERED`` event at the first hidden
-    station and a ``DARK_ZONE_EXITED`` event at the downstream LIGHT station.
-    Those paired events are the real completed corridor interval; attempting to
-    derive hidden ``PROCESSING_STARTED``/``PROCESSING_COMPLETED`` rows always
-    produces an empty calibration file.
+    Simulator v2.1 deliberately hides internal DARK processing events.  A
+    completed ``DARK_ZONE_ENTERED`` -> ``DARK_ZONE_EXITED`` pair therefore
+    identifies the *total* residence of a DARK zone, not the dwell of its
+    first station.  To avoid double-counting that total in the multi-station
+    particle filter, each historical total is allocated across the zone's
+    stations in proportion to configured base cycle times.  The allocation:
+
+    - uses only immutable station configuration plus a completed prior-run
+      boundary interval;
+    - preserves the observed total residence exactly; and
+    - never reconstructs or reads hidden internal simulator truth.
+
+    For an isolated single DARK station the allocation is exact: the whole
+    boundary interval belongs to that station.
     """
-    _, corridors = derive_dark_topology(configured)
+    configured = configured.copy()
+    configured["station_id"] = configured["station_id"].astype(str).str.strip()
+    order = configured["station_id"].tolist()
+    pos = {sid: i for i, sid in enumerate(order)}
+    singles, corridors = derive_dark_topology(configured)
+
+    zone_specs: list[dict[str, Any]] = []
+    for sid in sorted(singles, key=lambda x: pos[x]):
+        i = pos[sid]
+        downstream = order[i + 1] if i + 1 < len(order) else None
+        upstream = order[i - 1] if i > 0 else None
+        zone_specs.append({
+            "zone_id": f"DZ_{sid}",
+            "sequence": (sid,),
+            "first_station": sid,
+            "downstream_light_station": downstream,
+            "upstream_light_station": upstream,
+        })
+    for corridor in corridors.values():
+        zone_specs.append({
+            "zone_id": corridor.zone_id,
+            "sequence": tuple(corridor.sequence),
+            "first_station": corridor.first_station,
+            "downstream_light_station": corridor.downstream_light_station,
+            "upstream_light_station": corridor.upstream_light_station,
+        })
+
+    cycle_ms = {
+        str(r.station_id): max(float(getattr(r, "base_cycle_time_ms", 1.0)), 1.0)
+        for r in configured.itertuples(index=False)
+    }
     dwell_parts: list[pd.DataFrame] = []
     residence_rows: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
 
-    for corridor in corridors.values():
-        if corridor.downstream_light_station is None:
+    for spec in zone_specs:
+        sequence = tuple(map(str, spec["sequence"]))
+        first = str(spec["first_station"])
+        downstream = spec["downstream_light_station"]
+        if downstream is None:
+            # A DARK zone ending at the physical line exit has no downstream
+            # boundary event in the current simulator contract, so completed
+            # boundary residence cannot be observed safely.
             continue
-        corridor_rows: list[dict[str, Any]] = []
+
+        weights = [cycle_ms[sid] for sid in sequence]
+        weight_sum = float(sum(weights))
+        zone_dwell_rows: list[dict[str, Any]] = []
+        zone_residence_rows: list[dict[str, Any]] = []
+        completed_intervals = 0
+
         for run in runs:
             events = pd.read_csv(run / "station_events.csv")
             units = pd.read_csv(run / "units.csv")
             events["station_id"] = events["station_id"].astype(str).str.strip()
             events["unit_id"] = events["unit_id"].astype(str)
             events["event_type"] = events["event_type"].astype(str).str.upper()
+            events["timestamp_ms"] = pd.to_numeric(events["timestamp_ms"], errors="raise").astype("int64")
             variants = dict(zip(units["unit_id"].astype(str), units["vehicle_model"].astype(str)))
+
             entries = events[
-                events["station_id"].eq(corridor.first_station)
+                events["station_id"].eq(first)
                 & events["event_type"].eq("DARK_ZONE_ENTERED")
             ][["unit_id", "timestamp_ms"]].rename(columns={"timestamp_ms": "entry_ms"})
             exits = events[
-                events["station_id"].eq(corridor.downstream_light_station)
+                events["station_id"].eq(str(downstream))
                 & events["event_type"].eq("DARK_ZONE_EXITED")
             ][["unit_id", "timestamp_ms"]].rename(columns={"timestamp_ms": "exit_ms"})
             completed = entries.merge(exits, on="unit_id", how="inner")
-            completed = completed[completed["exit_ms"] > completed["entry_ms"]]
+            completed = completed[completed["exit_ms"] > completed["entry_ms"]].copy()
             if completed.empty:
                 continue
 
@@ -244,30 +309,55 @@ def _boundary_calibration_rows(
             exit_times = sorted(completed["exit_ms"].astype(int).tolist())
             for row in completed.itertuples(index=False):
                 entry_ms, exit_ms = int(row.entry_ms), int(row.exit_ms)
-                # Count only units that entered before this boundary and had
-                # not already exited. This is causal corridor load history.
+                total_ms = float(exit_ms - entry_ms)
                 active = sum(t < entry_ms for t in entry_times) - sum(t < entry_ms for t in exit_times)
-                corridor_rows.append({
-                    "station_id": corridor.first_station,
-                    "variant": variants.get(str(row.unit_id), "__UNKNOWN__"),
-                    "entry_ts": pd.to_datetime(entry_ms, unit="ms", utc=True).isoformat(),
-                    "exit_ts": pd.to_datetime(exit_ms, unit="ms", utc=True).isoformat(),
-                    "corridor_load": active,
-                    "source_run": run.name,
-                    "corridor_first_station": corridor.first_station,
-                    "corridor_upstream_station": corridor.upstream_light_station or "",
-                    "boundary_source": "DARK_ZONE_ENTERED/DARK_ZONE_EXITED",
-                })
-        if corridor_rows:
-            part = pd.DataFrame(corridor_rows)
-            dwell_parts.append(part[["station_id", "variant", "entry_ts", "exit_ts", "source_run"]])
-            residence_rows.extend(corridor_rows)
+                variant = variants.get(str(row.unit_id), "__UNKNOWN__")
+                cursor_ms = float(entry_ms)
+                completed_intervals += 1
+
+                for index, (sid, weight) in enumerate(zip(sequence, weights)):
+                    # Make the last allocation the remainder so floating-point
+                    # rounding cannot change the observed total interval.
+                    if index == len(sequence) - 1:
+                        station_exit_ms = float(exit_ms)
+                    else:
+                        station_exit_ms = cursor_ms + total_ms * float(weight) / weight_sum
+                    entry_ts = pd.to_datetime(cursor_ms, unit="ms", utc=True).isoformat()
+                    exit_ts = pd.to_datetime(station_exit_ms, unit="ms", utc=True).isoformat()
+                    base = {
+                        "station_id": sid,
+                        "variant": variant,
+                        "entry_ts": entry_ts,
+                        "exit_ts": exit_ts,
+                        "source_run": run.name,
+                        "boundary_source": "DARK_ZONE_ENTERED/DARK_ZONE_EXITED",
+                        "allocation_method": "configured_cycle_proportional",
+                    }
+                    zone_dwell_rows.append(dict(base))
+                    if len(sequence) > 1:
+                        zone_residence_rows.append({
+                            **base,
+                            "corridor_load": active,
+                            "corridor_first_station": first,
+                            "corridor_upstream_station": spec["upstream_light_station"] or "",
+                        })
+                    cursor_ms = station_exit_ms
+
+        if zone_dwell_rows:
+            dwell_parts.append(pd.DataFrame(zone_dwell_rows))
+        if zone_residence_rows:
+            residence_rows.extend(zone_residence_rows)
+        if completed_intervals:
             summaries.append({
-                "zone_id": corridor.zone_id,
-                "sequence": list(corridor.sequence),
-                "rows": len(corridor_rows),
+                "zone_id": spec["zone_id"],
+                "sequence": list(sequence),
+                "boundary_intervals": int(completed_intervals),
+                "dwell_rows": int(len(zone_dwell_rows)),
+                "residence_rows": int(len(zone_residence_rows)),
                 "source": "simulator_dark_boundaries",
+                "allocation": "configured_cycle_proportional",
             })
+
     return dwell_parts, residence_rows, summaries
 
 
@@ -313,37 +403,63 @@ def _build_dark_calibration(
     from build_corridor_residence_calibration import build_one_run  # type: ignore
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    has_internal_dark_processing = False
+    internal_runs: list[Path] = []
+    boundary_runs: list[Path] = []
     for run in runs:
         events = pd.read_csv(run / "station_events.csv", usecols=["station_id", "event_type"])
-        has_internal_dark_processing = bool((
+        has_internal = bool((
             events["station_id"].astype(str).isin(dark_ids)
             & events["event_type"].astype(str).isin({"PROCESSING_STARTED", "PROCESSING_COMPLETED"})
         ).any())
-        if has_internal_dark_processing:
-            break
+        (internal_runs if has_internal else boundary_runs).append(run)
 
     dwell_parts: list[pd.DataFrame] = []
     residence_rows: list[dict[str, Any]] = []
     corridor_summary: list[dict[str, Any]] = []
-    calibration_source = "internal_station_processing"
-    if has_internal_dark_processing:
-        for run in runs:
+
+    if internal_runs:
+        for run in internal_runs:
             temporary = output_dir / f".dwell-{run.name}.csv"
-            part = derive_historical_dwell_csv(str(run / "station_events.csv"), str(run / "units.csv"), str(temporary), dark_zone_station_ids=dark_ids)
+            part = derive_historical_dwell_csv(
+                str(run / "station_events.csv"), str(run / "units.csv"), str(temporary),
+                dark_zone_station_ids=dark_ids,
+            )
             temporary.unlink(missing_ok=True)
             if not part.empty:
                 dwell_parts.append(part.assign(source_run=run.name))
         _, corridors = derive_dark_topology(configured)
         for corridor in corridors.values():
-            rows = [row for run in runs for row in build_one_run(run, list(corridor.sequence), upstream_station=corridor.upstream_light_station)]
-            if not rows:
-                raise ValueError(f"No completed DARK corridor intervals were found for {list(corridor.sequence)}")
-            residence_rows.extend(rows)
-            corridor_summary.append({"zone_id": corridor.zone_id, "sequence": list(corridor.sequence), "rows": len(rows)})
+            rows = [
+                row
+                for run in internal_runs
+                for row in build_one_run(
+                    run, list(corridor.sequence),
+                    upstream_station=corridor.upstream_light_station,
+                )
+            ]
+            if rows:
+                residence_rows.extend(rows)
+                corridor_summary.append({
+                    "zone_id": corridor.zone_id,
+                    "sequence": list(corridor.sequence),
+                    "rows": len(rows),
+                    "source": "internal_station_processing",
+                })
+
+    if boundary_runs:
+        boundary_dwell, boundary_residence, boundary_summary = _boundary_calibration_rows(
+            boundary_runs, configured
+        )
+        dwell_parts.extend(boundary_dwell)
+        residence_rows.extend(boundary_residence)
+        corridor_summary.extend(boundary_summary)
+
+    if internal_runs and boundary_runs:
+        calibration_source = "mixed_internal_and_simulator_boundaries"
+    elif internal_runs:
+        calibration_source = "internal_station_processing"
     else:
         calibration_source = "simulator_dark_boundaries"
-        dwell_parts, residence_rows, corridor_summary = _boundary_calibration_rows(runs, configured)
 
     if not dwell_parts:
         raise ValueError(
@@ -367,6 +483,107 @@ def _build_dark_calibration(
         "source": calibration_source,
         "causality": "Calibration uses only completed training runs; runtime/test runs are never included.",
     }
+
+
+def build_dark_calibration_files(
+    runs: list[Path],
+    configured_csv: str | Path,
+    output_dir: str | Path,
+    *,
+    dark_station_ids: set[str],
+) -> tuple[Path | None, Path | None, dict[str, Any]]:
+    """Public shared DARK calibration entry point.
+
+    Calibration is derived only from the supplied completed historical runs.
+    For simulator schema v2.1, hidden internal station truth is never required:
+    paired DARK_ZONE_ENTERED/DARK_ZONE_EXITED boundaries provide the completed
+    corridor intervals.
+    """
+    out = Path(output_dir).expanduser().resolve()
+    result = _build_dark_calibration(
+        [Path(r).expanduser().resolve() for r in runs],
+        Path(configured_csv).expanduser().resolve(),
+        out,
+        dark_station_ids=set(dark_station_ids),
+    )
+    dwell = out / "historical_dwell.csv" if result.get("dwell") else None
+    residence = (
+        out / "corridor_residence_calibration.csv"
+        if result.get("corridor_residence")
+        else None
+    )
+    return dwell, residence, result
+
+
+def _validate_training_runs_against_factory(
+    runs: list[Path],
+    configured_csv: Path,
+    *,
+    dark_station_ids: set[str],
+) -> None:
+    """Reject mixed/incompatible simulator runs before factory continuation training.
+
+    Factory training must never silently combine runs from a different station
+    configuration or DARK topology. New simulator runs are checked against their
+    authoritative ``dz.csv``. Legacy runs without ``dz.csv`` still receive a
+    static station-contract check and use the explicitly supplied factory topology.
+    """
+    expected = pd.read_csv(configured_csv)
+    required = [
+        "station_id", "archetype", "base_cycle_time_ms",
+        "cycle_time_std_ms", "buffer_capacity",
+    ]
+    missing = [c for c in required if c not in expected.columns]
+    if missing:
+        raise ValueError(f"Configured factory station contract missing columns: {missing}")
+    expected = expected.copy()
+    expected["station_id"] = expected["station_id"].astype(str).str.strip()
+
+    for run in runs:
+        stations_path = run / "stations.csv"
+        current = pd.read_csv(stations_path)
+        missing_current = [c for c in required if c not in current.columns]
+        if missing_current:
+            raise ValueError(f"{run.name}/stations.csv missing factory-contract columns: {missing_current}")
+        current["station_id"] = current["station_id"].astype(str).str.strip()
+        if current["station_id"].tolist() != expected["station_id"].tolist():
+            raise ValueError(f"{run.name}: station order/IDs do not match the target factory")
+        for col in required[1:]:
+            if col in {"base_cycle_time_ms", "cycle_time_std_ms", "buffer_capacity"}:
+                left = pd.to_numeric(expected[col], errors="coerce")
+                right = pd.to_numeric(current[col], errors="coerce")
+                equal = left.fillna(float("inf")).eq(right.fillna(float("inf")))
+            else:
+                equal = (
+                    expected[col].astype(str).str.strip().str.upper()
+                    .eq(current[col].astype(str).str.strip().str.upper())
+                )
+            if not bool(equal.all()):
+                bad = [
+                    str(expected.loc[i, "station_id"])
+                    for i in equal.index[~equal][:5]
+                ]
+                raise ValueError(
+                    f"{run.name}: station configuration column {col!r} differs from "
+                    f"the target factory at {bad}"
+                )
+
+        dz = run / "dz.csv"
+        if dz.is_file():
+            # Includes an independent static check plus authoritative DARK ranges.
+            validate_runtime_topology_match(configured_csv, stations_path, dz)
+        elif dark_station_ids:
+            # Legacy runs can predate dz.csv. Their DARK topology is supplied by the
+            # explicit factory.json; never infer it from raw sensor_coverage.
+            configured_current = configure_sensor_coverage(current, set(dark_station_ids))
+            expected_dark = set(
+                expected.loc[expected["sensor_coverage"].astype(str).str.upper().eq("NONE"), "station_id"]
+            )
+            current_dark = set(
+                configured_current.loc[configured_current["sensor_coverage"].astype(str).str.upper().eq("NONE"), "station_id"]
+            )
+            if current_dark != expected_dark:
+                raise ValueError(f"{run.name}: legacy DARK topology does not match target factory")
 
 
 def train_factory_model(
@@ -408,6 +625,10 @@ def train_factory_model(
             if not source_configured.is_file():
                 raise FileNotFoundError(f"Configured stations CSV not found: {source_configured}")
             shutil.copy2(source_configured, configured)
+        factory_dark_station_ids = _dark_station_ids(factory)
+        _validate_training_runs_against_factory(
+            runs, configured, dark_station_ids=factory_dark_station_ids
+        )
         if progress:
             progress("Training: materializing causal bottleneck features (this can take a while)...")
         derived = materialize(runs_root, staging / "derived")
@@ -426,7 +647,6 @@ def train_factory_model(
         if completed.returncode:
             raise RuntimeError(f"Bottleneck training failed (see {staging / 'training.stderr.log'})")
 
-        factory_dark_station_ids = _dark_station_ids(factory)
         if progress:
             action = "building DARK calibration" if factory_dark_station_ids else "skipping DARK calibration (factory has no DARK zones)"
             progress(f"Training: {action}...")

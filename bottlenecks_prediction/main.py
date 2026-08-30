@@ -93,6 +93,7 @@ def build_pipeline(
     run_id: str = "LIVE",
     prediction_interval_s: float = 60.0,
     corridor_particles: int = 3000,
+    random_seed: Optional[int] = None,
 ) -> DigitalTwinBottleneckPipeline:
     """Construct the persistent production pipeline once.
 
@@ -120,6 +121,7 @@ def build_pipeline(
         run_id=run_id,
         prediction_interval_s=prediction_interval_s,
         corridor_particles=corridor_particles,
+        random_seed=random_seed,
     )
 
 
@@ -283,10 +285,17 @@ def _prepare_replay_calibration(
     if args.historical_dwell is not None:
         return _existing_file(args.historical_dwell, "historical_dwell.csv")
 
+    if not getattr(args, "allow_same_run_calibration", False):
+        raise ValueError(
+            "DARK replay requires --historical-dwell from PRIOR completed run(s). "
+            "Same-run calibration is disabled to preserve causality. "
+            "For a non-evaluative demo only, pass --allow-same-run-calibration."
+        )
+
     generated_dir = _generated_replay_dir(run_dir, events_csv)
     output = generated_dir / "historical_dwell.csv"
     print(
-        "No --historical-dwell supplied; auto-generating replay calibration "
+        "DEMO MODE: auto-generating same-run dwell calibration "
         f"from station_events.csv -> {output}"
     )
     helpers["derive_historical_dwell_csv"](
@@ -294,10 +303,6 @@ def _prepare_replay_calibration(
         str(units_csv),
         output_csv=str(output),
         dark_zone_station_ids=dark_station_ids,
-    )
-    print(
-        "NOTE: same-run dwell calibration is appropriate for a functionality/demo replay, "
-        "not for accuracy validation. Validation should use prior completed run(s)."
     )
     return output
 
@@ -312,10 +317,11 @@ def _prepare_replay_corridor_residence(
 ) -> Optional[Path]:
     """Resolve or auto-build corridor residence calibration before PF startup.
 
-    Explicit ``--corridor-residence`` always wins. For completed CSV replay with
-    ``--run-dir``, a physically correct same-run calibration is auto-generated
-    for functionality/demo use. Accuracy validation should pass a calibration
-    file built only from prior completed run(s). Live mode never auto-generates
+    Explicit ``--corridor-residence`` always wins. Production/validation replay
+    never learns corridor residence from the evaluated run; prior historical dwell
+    remains the causal fallback when no prior corridor-residence file is supplied.
+    Same-run residence generation is available only behind the explicit
+    ``--allow-same-run-calibration`` demo flag. Live mode never auto-generates
     future-dependent calibration.
     """
     if not corridors:
@@ -329,6 +335,11 @@ def _prepare_replay_corridor_residence(
             "No --corridor-residence supplied and replay has no --run-dir; "
             "corridor PF will use its processing-dwell fallback."
         )
+        return None
+    if not getattr(args, "allow_same_run_calibration", False):
+        # A prior historical_dwell file is sufficient for the PF's causal
+        # processing-dwell fallback. Do not learn corridor residence from the
+        # run currently being evaluated.
         return None
 
     rows: list[dict[str, Any]] = []
@@ -385,8 +396,16 @@ def _dark_event_to_runtime_evidence(event: Any) -> dict[str, Any]:
         raise ValueError(f"Unsupported replay evidence event type: {raw_type!r}")
 
     vehicle_id = getattr(event, "vehicle_id", None)
-    if vehicle_id is None or pd.isna(vehicle_id):
-        raise ValueError("Replay evidence event is missing unit_id")
+    missing_vehicle = (
+        vehicle_id is None
+        or (isinstance(vehicle_id, float) and pd.isna(vehicle_id))
+        or not str(vehicle_id).strip()
+    )
+    # POWER_DRAW is intentionally allowed to be anonymous: the simulator's
+    # station-level power checkpoint observes activity without identifying a
+    # unit. RFID/Andon remain identity evidence.
+    if missing_vehicle and event_type != "POWER_DRAW":
+        raise ValueError(f"Replay {event_type} evidence is missing unit_id")
 
     progress = getattr(event, "checkpoint_progress", None)
     if progress is None or pd.isna(progress):
@@ -395,7 +414,7 @@ def _dark_event_to_runtime_evidence(event: Any) -> dict[str, Any]:
     return {
         "timestamp_ms": int(round(float(event.ts) * 1000.0)),
         "station_id": str(event.station_id),
-        "unit_id": str(vehicle_id),
+        "unit_id": None if missing_vehicle else str(vehicle_id),
         "event_type": event_type,
         "checkpoint_progress": float(progress),
     }
@@ -421,17 +440,17 @@ def _prepare_replay_evidence(
         args.station_checkpoints, run_dir, "station_checkpoints.csv"
     )
 
-    checkpoint_events: Optional[Path] = None
-    if args.checkpoint_events is not None:
-        checkpoint_events = _existing_file(args.checkpoint_events, "checkpoint_events.csv")
-    elif station_checkpoints is not None:
-        # The Dark-Zone project already contains a corrected checkpoint generator.
-        # Generate from each unit's real dwell window for deterministic simulator
-        # replay rather than trusting independently-generated timestamps.
+    # Simulator schema v2.1 emits the real observable checkpoint stream. Use it
+    # directly. Synthetic generation is only a legacy fallback for older runs
+    # that have checkpoint definitions but no checkpoint_events.csv.
+    checkpoint_events = _discover_optional_run_file(
+        args.checkpoint_events, run_dir, "checkpoint_events.csv"
+    )
+    if checkpoint_events is None and station_checkpoints is not None:
         generated_dir = _generated_replay_dir(run_dir, events_csv)
         checkpoint_events = generated_dir / "checkpoint_events.csv"
         print(
-            "Auto-generating physically-consistent checkpoint evidence "
+            "No checkpoint_events.csv found; generating legacy checkpoint evidence "
             f"-> {checkpoint_events}"
         )
         helpers["generate_checkpoint_events"](
@@ -521,6 +540,8 @@ def replay_command(args: argparse.Namespace) -> int:
     """Replay CSV events through the exact live pipeline and write dashboard JSONL."""
     if args.pace and args.mult <= 0:
         raise ValueError("--mult must be positive when --pace is enabled")
+    if args.inference_batch_size <= 0:
+        raise ValueError("--inference-batch-size must be > 0")
     units_csv, events_csv, run_dir = _resolve_replay_inputs(args)
     dark_station_ids = _configured_dark_station_ids(args.configured_stations)
     corridors = _configured_corridors(args.configured_stations)
@@ -574,8 +595,21 @@ def replay_command(args: argparse.Namespace) -> int:
     processed_evidence = 0
     last_timestamp_ms: Optional[int] = None
     delivered_timestamp_ms: Optional[int] = None
+    pending_packets: list[Any] = []
 
     with output_path.open("w", encoding="utf-8") as output_handle:
+        def flush_pending() -> int:
+            if not pending_packets:
+                return 0
+            batch = pipeline.score_packets(pending_packets)
+            pending_packets.clear()
+            return _emit_predictions(
+                batch,
+                output_handle=output_handle,
+                print_handle=sys.stdout if args.print_predictions else None,
+                include_diagnostics=args.include_diagnostics,
+            )
+
         events = pd.read_csv(events_csv)
         if args.limit is not None:
             events = events.iloc[: args.limit].copy()
@@ -603,20 +637,24 @@ def replay_command(args: argparse.Namespace) -> int:
                     time.sleep(delay_seconds)
             delivered_timestamp_ms = last_timestamp_ms
             if kind == "evidence":
-                predictions = pipeline.process_evidence_event(event)
+                packets = pipeline.route_evidence_event(event)
                 processed_evidence += 1
             else:
-                predictions = pipeline.process_event(event)
+                packets = pipeline.route_event(event)
                 processed_events += 1
-            total_predictions += _emit_predictions(
-                predictions,
-                output_handle=output_handle,
-                print_handle=sys.stdout if args.print_predictions else None,
-                include_diagnostics=args.include_diagnostics,
-            )
+            pending_packets.extend(packets)
+
+            # Accelerated/unpaced replay can batch model + TreeSHAP work because
+            # predictions do not feed back into the causal runtime controller.
+            # Paced replay keeps immediate emission semantics.
+            effective_batch_size = 1 if args.pace else args.inference_batch_size
+            if len(pending_packets) >= effective_batch_size:
+                total_predictions += flush_pending()
+
+        total_predictions += flush_pending()
         if args.flush_dark_to_ms is not None:
             flush_to = int(args.flush_dark_to_ms)
-            predictions = pipeline.advance_time(flush_to)
+            predictions = pipeline.score_packets(pipeline.route_advance_time(flush_to))
             total_predictions += _emit_predictions(
                 predictions,
                 output_handle=output_handle,
@@ -625,7 +663,7 @@ def replay_command(args: argparse.Namespace) -> int:
             )
         elif args.flush_dark_by_ms is not None and last_timestamp_ms is not None:
             flush_to = last_timestamp_ms + int(args.flush_dark_by_ms)
-            predictions = pipeline.advance_time(flush_to)
+            predictions = pipeline.score_packets(pipeline.route_advance_time(flush_to))
             total_predictions += _emit_predictions(
                 predictions,
                 output_handle=output_handle,
@@ -829,14 +867,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint-events",
         type=Path,
         help=(
-            "Optional explicit checkpoint_events.csv. If omitted and "
-            "station_checkpoints.csv exists, corrected checkpoint events are auto-generated."
+            "Optional explicit checkpoint_events.csv. With --run-dir, the simulator's "
+            "checkpoint_events.csv is auto-discovered; generation is legacy fallback only."
         ),
     )
     replay.add_argument(
         "--station-checkpoints",
         type=Path,
         help="Optional override for station_checkpoints.csv; auto-discovered from --run-dir.",
+    )
+    replay.add_argument(
+        "--allow-same-run-calibration",
+        action="store_true",
+        help=(
+            "DEMO ONLY: allow the replayed completed run to calibrate its own DARK "
+            "estimator. Never use this for validation or production evaluation."
+        ),
     )
     replay.add_argument(
         "--no-auto-evidence",
@@ -848,6 +894,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.add_argument(
         "--limit", type=int, help="Optional number of input events for a smoke/demo replay."
+    )
+    replay.add_argument(
+        "--inference-batch-size",
+        type=int,
+        default=256,
+        help=(
+            "Batch size for XGBoost + TreeSHAP during unpaced replay (default: 256). "
+            "Use 1 for strictly per-prediction inference."
+        ),
     )
     replay.add_argument("--flush-dark-to-ms", type=int)
     replay.add_argument(

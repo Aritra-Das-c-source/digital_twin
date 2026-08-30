@@ -314,7 +314,7 @@ def main() -> int:
     model.save_model(args.output / "bottleneck_xgboost.json")
     joblib.dump(
         {
-            "model": model,
+            "xgboost_model": "bottleneck_xgboost.json",
             "features": BOTTLENECK_FEATURES,
             "categorical_features": CATEGORICAL_FEATURES,
             "category_levels": category_levels,

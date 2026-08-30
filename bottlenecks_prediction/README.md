@@ -56,25 +56,43 @@ delivery at `--mult` (60× by default); use `--unpaced` for a fast offline repla
 The runtime still receives events in timestamp order through the same
 `process_event()` / `advance_time()` implementation used for live input.
 
-## Legacy current-run workflow
+## Live current-run workflow
 
-The simulator writes a **completed run** into:
-
-```text
-data/input/current_run/
-├── stations.csv
-├── units.csv
-├── station_events.csv
-└── manual_checks.csv       # optional
-```
-
-Factory checkpoint layout is kept separately at:
+`run_current.py` starts **only the bottleneck consumer**. It does not launch or own
+the simulator process. The intended deployment is:
 
 ```text
-config/station_checkpoints.csv
+factory.json / scenario
+        |
+        v
+C++ simulator (separate process)
+        |
+        +--> stations.csv + dz.csv + station_checkpoints.csv
+        +--> units.csv (appended/flushed as units are created)
+        +--> runtime_events.csv (ordered, flushed public event bus)
+                         |
+                         v
+                  run_current.py
+                         |
+              LIGHT / DARK router
+                  /           \
+             LIGHT        DARK PF/corridor PF
+                  \           /
+                   exact 28 features
+                         |
+                 native XGBoost JSON
+                         |
+                    exact TreeSHAP
+                         |
+                  predictions.jsonl
 ```
 
-Prior completed runs used only for causal DARK calibration live under:
+The simulator's `dz.csv` is authoritative for DARK membership. Raw
+`sensor_coverage` is telemetry richness and is **not** used as a DARK-zone flag.
+S01/other zero-buffer source stations are not sent to the frozen bottleneck model
+because the frozen training target never produced eligible labels for them.
+
+Prior completed runs used for causal DARK calibration live under:
 
 ```text
 data/calibration/history/<run_name>/
@@ -83,43 +101,68 @@ data/calibration/history/<run_name>/
 └── station_events.csv
 ```
 
-The current run is **never** used to calibrate itself by `run_current.py`.
+For simulator v2.1 history, calibration uses only paired public
+`DARK_ZONE_ENTERED` / `DARK_ZONE_EXITED` boundaries. Hidden internal processing
+truth is neither required nor reconstructed. The current run is **never** used to
+calibrate itself by `run_current.py`.
 
-## One-click use
+## Start the bottleneck consumer
 
-Install dependencies (Python 3.10+ recommended), then run the launcher:
+Install dependencies (Python 3.10+ recommended), start the simulator separately so
+it writes to `data/input/current_run/`, then from `bottlenecks_prediction/` run:
 
 ```bash
 pip install -r requirements.txt
 python run_current.py
 ```
 
-Run it from the `bottlenecks_prediction/` directory so the relative `data/`, `config/`, and `dark_zone/` paths resolve correctly.
+`run_current.py` defaults to live mode. It waits for the simulator's public files,
+uses the selected model pointer (BASE by default), and tails `runtime_events.csv`.
+BASE derives DARK topology from the run's `dz.csv`; a selected factory artifact must
+match the run's station order, static station settings, and DARK topology or startup
+is rejected. The consumer handles both identified RFID and non-identifying
+POWER_DRAW evidence and writes predictions as the simulation progresses. POWER_DRAW
+with blank `unit_id` is associated probabilistically across the active DARK
+population; it is not discarded or assigned fake identity.
 
-By default the launcher prints the available station IDs and prompts you to enter which ones are DARK (comma-separated, e.g. `S08,S12,S14`; leave blank for all LIGHT). You can skip the prompt with flags:
-
-```bash
-python run_current.py --dark-stations S08,S12,S14 --particles 3000 --run-id CURRENT_RUN
-```
+Useful options:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--dark-stations` | prompts interactively | Comma-separated DARK station IDs |
-| `--particles` | `3000` | Number of simulation particles |
-| `--output` | `data/output/predictions.jsonl` | Where predictions are written |
-| `--run-id` | `CURRENT_RUN` | Label for this run |
+| `--mode` | `live` | `live` tails the simulator; `replay` processes a completed current run |
+| `--particles` | `3000` | DARK corridor particle count |
+| `--output` | `data/output/predictions.jsonl` | Prediction JSONL destination |
+| `--run-id` | `CURRENT_RUN` | Runtime label |
+| `--model-id` | selected pointer | Optional explicit BASE/factory artifact override |
+| `--artifact-root` | `factory_models/` | Factory artifact store / selected-model pointer |
+| `--wait-seconds` | `120` | Maximum wait for simulator public files |
+| `--poll-ms` | `50` | Live bus polling interval |
+| `--live-batch-size` | `128` | Maximum public records routed before batched XGBoost/SHAP scoring |
 
-## Simulator contract
+For a completed run (which must contain `run_metadata.json`):
 
-Required runtime files and columns:
+```bash
+python run_current.py --mode replay --particles 3000
+```
 
-- `stations.csv`: must contain `station_id` and the existing station configuration columns used by the project.
-- `units.csv`: must contain `unit_id`, `vehicle_model`.
-- `station_events.csv`: must contain `timestamp_ms`, `station_id`, `unit_id`, `event_type`.
+Completed replay auto-discovers the simulator's real `checkpoint_events.csv` and
+`station_checkpoints.csv`. Legacy synthetic checkpoint generation is used only when
+a historical/older run has checkpoint definitions but no real checkpoint stream.
 
-Do not change existing column names/schema. The simulator should finish writing the run before the prediction launcher is started.
+## Simulator live contract
 
-`manual_checks.csv` is optional. `sensor_readings.csv` and `inspection_results.csv` are not required by the final prediction runtime.
+The live consumer expects the simulator to create:
+
+- `stations.csv`: physical station configuration.
+- `dz.csv`: inclusive DARK corridor topology.
+- `units.csv`: `unit_id` and `vehicle_model`, appended/flushed before first use.
+- `station_checkpoints.csv`: RFID/POWER_DRAW checkpoint progress definitions.
+- `runtime_events.csv`: one ordered public stream containing station events/boundaries and observable checkpoint evidence.
+- `run_metadata.json`: created by the simulator at completion; the live consumer drains the bus and then exits.
+
+The public bus deliberately does **not** expose hidden internal DARK movement or
+processing truth. RFID and POWER_DRAW checkpoints remain visible because they are
+the intended sparse DARK evidence.
 
 ## Causality
 
@@ -128,11 +171,11 @@ For DARK stations, `run_current.py` builds `historical_dwell.csv` and corridor-r
 ## Tests
 
 ```bash
-py -m pytest tests -q
+python -m pytest -q
 ```
 
-Current packaged suite: **13 tests**.
+Current packaged suite is executed with `python -m pytest -q`; the final validation pass is recorded in `BOTTLENECK_SIMULATOR_INTEGRATION_FIXES.md`.
 
 ## Performance note
 
-The model/runtime correctness path is validated. Optimization of very large accelerated replays at the production 3000-particle setting remains a separate performance task.
+The runtime now batches feature preparation, XGBoost inference, and exact TreeSHAP during unpaced replay (default batch size 256) instead of repeating pandas/DMatrix setup for every prediction. DARK particle-filter cost is unchanged; production 3000-particle replay should still be benchmarked on the target machine.
