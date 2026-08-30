@@ -100,10 +100,10 @@ class TestNoExecutionOnLoad:
         assert not (tmp_path / "generated").exists()
         assert not (tmp_path / "runtime_output").exists()
 
-    def test_run_factory_button_is_present_but_idle(self, tmp_path: Path, monkeypatch):
+    def test_run_factory_is_isolated_from_the_initial_page(self, tmp_path: Path, monkeypatch):
         app = _launch(tmp_path, monkeypatch)
         labels = [button.label for button in app.button]
-        assert any("RUN FACTORY" in label for label in labels)
+        assert not any("RUN FACTORY" in label for label in labels)
         assert not (tmp_path / "runs").exists()
 
 
@@ -128,37 +128,20 @@ class TestRunHistoryView:
         assert not app.exception, [str(e) for e in app.exception]
 
 
-class TestRunFactoryCommand:
-    """The button must produce a command that is verified, not merely templated."""
+class TestRunFactoryPage:
+    """Run controls are available only on the dedicated page and stay idle on load."""
 
-    def _click_run_factory(self, app: AppTest) -> AppTest:
-        for button in app.button:
-            if "RUN FACTORY" in button.label:
-                return button.click().run()
-        raise AssertionError("RUN FACTORY button not found")
+    def _open_run_factory(self, app: AppTest) -> AppTest:
+        return app.sidebar.radio[0].set_value("Run Factory").run()
 
-    def test_clicking_shows_a_command_or_a_blocker(self, tmp_path: Path, monkeypatch):
-        app = self._click_run_factory(_launch(tmp_path, monkeypatch))
+    def test_page_shows_execution_controls_or_a_preflight_blocker(self, tmp_path: Path, monkeypatch):
+        app = self._open_run_factory(_launch(tmp_path, monkeypatch))
         assert not app.exception, [str(e) for e in app.exception]
-        shown = "\n".join(str(block.value) for block in app.code)
-        errors = "\n".join(str(e.value) for e in app.error)
-        assert ("cli.py" in shown) or errors, "neither a command nor a blocker was shown"
+        labels = [button.label for button in app.button]
+        assert any("RUN FACTORY" in label for label in labels)
 
-    def test_command_carries_the_utf8_environment(self, tmp_path: Path, monkeypatch):
-        """Without PYTHONUTF8 the defect consumer dies on a cp1252 encode error."""
-        app = self._click_run_factory(_launch(tmp_path, monkeypatch))
-        shown = "\n".join(str(block.value) for block in app.code)
-        if "cli.py" in shown:
-            assert "PYTHONUTF8" in shown
-
-    def test_command_pins_a_verified_bottleneck_model(self, tmp_path: Path, monkeypatch):
-        app = self._click_run_factory(_launch(tmp_path, monkeypatch))
-        shown = "\n".join(str(block.value) for block in app.code)
-        if "system run random" in shown:
-            assert "--bottleneck-model-id" in shown
-
-    def test_clicking_starts_no_run(self, tmp_path: Path, monkeypatch):
-        app = self._click_run_factory(_launch(tmp_path, monkeypatch))
+    def test_page_load_starts_no_run(self, tmp_path: Path, monkeypatch):
+        app = self._open_run_factory(_launch(tmp_path, monkeypatch))
         assert not app.exception
         assert not (tmp_path / "runs").exists()
         assert not (tmp_path / "generated").exists()

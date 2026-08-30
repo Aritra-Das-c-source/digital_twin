@@ -294,7 +294,7 @@ def main() -> None:
     page = _render_sidebar(context)
 
     st.title("DIGITALTWIN.AI")
-    st.caption(f"Prototype dashboard · viewing as {st.session_state.get('role', ROLES[0])}")
+    st.caption("Prototype dashboard · data-backed operational analytics")
 
     for notice in context.notices:
         st.info(notice)
