@@ -1,116 +1,158 @@
-"""Tests for dashboard.factory.generator — demo factory generation."""
+"""Demo factory generator tests.
+
+The important property is not "looks plausible" but "the existing simulator would
+accept it", so these assert the ConfigLoader rules directly.
+"""
+
 from __future__ import annotations
 
 import pytest
 
-from dashboard.factory.generator import generate_demo_factory
-from dashboard.factory.validator import is_valid_factory, validate_factory
+from dashboard.factory.generator import (
+    MAX_DEMO_STATIONS,
+    MIN_DEMO_STATIONS,
+    generate_demo_factory,
+    is_demo_factory,
+)
+from dashboard.factory.validator import MAX_DARK_CORRIDOR_POLICY, validate_factory
+
+SEEDS = [0, 1, 7, 42, 99, 100, 999, 12345]
 
 
-class TestDemoFactoryGeneration:
-    """Verify the deterministic demo factory generator."""
+@pytest.fixture(scope="module")
+def factory() -> dict:
+    return generate_demo_factory(seed=42)
 
-    def test_generator_returns_dict(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        assert isinstance(factory, dict)
 
-    def test_station_count_in_range(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        stations = factory["stations"]
-        assert 30 <= len(stations) <= 50, f"Expected 30-50 stations, got {len(stations)}"
+class TestDeterminism:
+    def test_same_seed_is_identical(self):
+        assert generate_demo_factory(seed=99) == generate_demo_factory(seed=99)
 
-    def test_deterministic_with_same_seed(self) -> None:
-        a = generate_demo_factory(seed=99)
-        b = generate_demo_factory(seed=99)
-        assert a == b
+    def test_different_seeds_differ(self):
+        assert generate_demo_factory(seed=1) != generate_demo_factory(seed=2)
 
-    def test_different_seeds_produce_different_factories(self) -> None:
-        a = generate_demo_factory(seed=1)
-        b = generate_demo_factory(seed=2)
-        # At least some stations should differ in cycle times
-        a_times = [s["meanCycleTimeMs"] for s in a["stations"]]
-        b_times = [s["meanCycleTimeMs"] for s in b["stations"]]
-        assert a_times != b_times
+    def test_seed_is_recorded(self, factory: dict):
+        assert factory["_seed"] == 42
 
-    def test_passes_validator(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        errors = validate_factory(factory)
-        assert errors == [], f"Validation errors: {errors}"
 
-    def test_is_valid(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        assert is_valid_factory(factory)
+class TestSimulatorContract:
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_no_validation_errors(self, seed: int):
+        result = validate_factory(generate_demo_factory(seed=seed))
+        assert result.errors == []
 
-    def test_has_source_and_sink(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        stations = factory["stations"]
-        sources = [s for s in stations if s.get("source")]
-        sinks = [s for s in stations if s.get("sink")]
-        assert len(sources) == 1, f"Expected 1 source, got {len(sources)}"
-        assert len(sinks) == 1, f"Expected 1 sink, got {len(sinks)}"
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_no_policy_warnings(self, seed: int):
+        result = validate_factory(generate_demo_factory(seed=seed))
+        assert result.warnings == []
 
-    def test_has_dark_zones(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        dark_zones = factory.get("darkZones", [])
-        assert len(dark_zones) >= 1, "Expected at least 1 dark zone"
-
-    def test_dark_zone_max_corridor_length(self) -> None:
-        """Dark zone corridors must be at most 3 stations wide."""
-        factory = generate_demo_factory(seed=42)
-        for zone in factory.get("darkZones", []):
-            span = zone["endStationId"] - zone["startStationId"] + 1
-            assert span <= 4, (
-                f"Dark zone {zone['id']} spans {span} stations (max allowed is 4 including boundary)"
-            )
-
-    def test_has_checkpoints(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        checkpoints = factory.get("checkpoints", [])
-        assert len(checkpoints) >= 2
-
-    def test_mixed_archetypes(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        archetypes = {s["archetype"] for s in factory["stations"]}
-        assert "AUTOMATED" in archetypes
-        assert "MANUAL" in archetypes
-        assert "INSPECTION" in archetypes
-
-    def test_mixed_sensor_coverage(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        coverages = {s["sensorCoverage"] for s in factory["stations"]}
-        assert "HIGH" in coverages
-        assert "PARTIAL" in coverages
-        assert "NONE" in coverages
-
-    def test_manual_stations_have_none_coverage(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        for station in factory["stations"]:
-            if station["archetype"] == "MANUAL":
-                assert station["sensorCoverage"] == "NONE", (
-                    f"Manual station {station['name']} should have NONE sensor coverage"
-                )
-
-    def test_station_ids_sequential(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        ids = [s["id"] for s in factory["stations"]]
+    def test_ids_are_contiguous(self, factory: dict):
+        ids = [station["id"] for station in factory["stations"]]
         assert ids == list(range(len(ids)))
 
-    def test_marked_as_generated(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        assert factory.get("_generated") is True
-        assert factory.get("_generator") == "dashboard-demo"
-        assert factory.get("_seed") == 42
+    def test_source_and_sink_are_the_endpoints(self, factory: dict):
+        stations = factory["stations"]
+        assert stations[0].get("source") is True
+        assert stations[-1].get("sink") is True
+        assert all(not s.get("source") for s in stations[1:])
+        assert all(not s.get("sink") for s in stations[:-1])
 
-    def test_valid_cycle_times(self) -> None:
-        factory = generate_demo_factory(seed=42)
-        for station in factory["stations"]:
-            assert station["meanCycleTimeMs"] > 0
-            assert 0 < station["cycleTimeCV"] < 1.0
-            assert station["bufferCapacity"] >= 0
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_dark_zones_hold_no_inspection_stations(self, seed: int):
+        generated = generate_demo_factory(seed=seed)
+        archetypes = {s["id"]: s["archetype"] for s in generated["stations"]}
+        for zone in generated["darkZones"]:
+            span = range(zone["startStationId"], zone["endStationId"] + 1)
+            assert all(archetypes[i] != "INSPECTION" for i in span)
 
-    def test_multiple_seeds_all_valid(self) -> None:
-        """Verify several different seeds all produce valid factories."""
-        for seed in [1, 7, 42, 100, 999]:
-            factory = generate_demo_factory(seed=seed)
-            errors = validate_factory(factory)
-            assert errors == [], f"Seed {seed} produced validation errors: {errors}"
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_dark_zones_are_non_adjacent_and_ordered(self, seed: int):
+        zones = generate_demo_factory(seed=seed)["darkZones"]
+        for previous, current in zip(zones, zones[1:]):
+            assert current["startStationId"] >= previous["endStationId"] + 2
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_checkpoints_carry_every_required_field(self, seed: int):
+        for checkpoint in generate_demo_factory(seed=seed)["checkpoints"]:
+            assert set(checkpoint) >= {"id", "stationId", "type", "progress", "reliability"}
+            assert 0 < checkpoint["progress"] < 1
+            assert 0 <= checkpoint["reliability"] <= 1
+
+    def test_no_scaffolding_leaks_into_stations(self, factory: dict):
+        assert all("_segment" not in station for station in factory["stations"])
+
+
+class TestDemoShape:
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_station_count_in_range(self, seed: int):
+        count = len(generate_demo_factory(seed=seed)["stations"])
+        assert MIN_DEMO_STATIONS <= count <= MAX_DEMO_STATIONS
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_dark_corridor_length_capped(self, seed: int):
+        for zone in generate_demo_factory(seed=seed)["darkZones"]:
+            span = zone["endStationId"] - zone["startStationId"] + 1
+            assert 2 <= span <= MAX_DARK_CORRIDOR_POLICY
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_has_light_and_dark_areas(self, seed: int):
+        generated = generate_demo_factory(seed=seed)
+        dark = {
+            index
+            for zone in generated["darkZones"]
+            for index in range(zone["startStationId"], zone["endStationId"] + 1)
+        }
+        assert len(generated["darkZones"]) >= 2
+        assert dark
+        assert len(dark) < len(generated["stations"])
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_mixed_archetypes(self, seed: int):
+        archetypes = {s["archetype"] for s in generate_demo_factory(seed=seed)["stations"]}
+        assert archetypes == {"AUTOMATED", "MANUAL", "INSPECTION"}
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_uneven_sensor_coverage(self, seed: int):
+        stations = generate_demo_factory(seed=seed)["stations"]
+        counts = {level: 0 for level in ("HIGH", "PARTIAL", "NONE")}
+        for station in stations:
+            counts[station["sensorCoverage"]] += 1
+        assert all(count > 0 for count in counts.values())
+        # "uneven" means genuinely lopsided, not a near-even split.
+        assert max(counts.values()) > min(counts.values()) * 1.5
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_every_dark_corridor_contains_an_unobserved_manual_station(self, seed: int):
+        generated = generate_demo_factory(seed=seed)
+        by_id = {s["id"]: s for s in generated["stations"]}
+        for zone in generated["darkZones"]:
+            span = range(zone["startStationId"], zone["endStationId"] + 1)
+            assert any(
+                by_id[i]["archetype"] == "MANUAL" and by_id[i]["sensorCoverage"] == "NONE"
+                for i in span
+            )
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_manual_stations_are_unobserved(self, seed: int):
+        for station in generate_demo_factory(seed=seed)["stations"]:
+            if station["archetype"] == "MANUAL":
+                assert station["sensorCoverage"] == "NONE"
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_parameters_vary_between_stations(self, seed: int):
+        stations = generate_demo_factory(seed=seed)["stations"]
+        assert len({s["meanCycleTimeMs"] for s in stations}) > 5
+        assert len({s["bufferCapacity"] for s in stations}) > 1
+
+
+class TestDemoMarking:
+    def test_marked_as_demo(self, factory: dict):
+        assert factory["_demo"] is True
+        assert factory["_generated_by"] == "dashboard.factory.generator"
+        assert "demo" in factory["_note"].lower()
+
+    def test_is_demo_factory_detects_marker(self, factory: dict):
+        assert is_demo_factory(factory) is True
+
+    def test_is_demo_factory_rejects_plain_factory(self):
+        assert is_demo_factory({"stations": []}) is False

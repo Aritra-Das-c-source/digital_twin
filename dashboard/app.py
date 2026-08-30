@@ -1,214 +1,225 @@
-"""DigitalTwin.ai Dashboard — Streamlit application shell.
+"""DigitalTwin.ai dashboard shell.
 
-Launch with:
-    streamlit run dashboard/app.py
+Launch with::
 
-The dashboard is DOWNSTREAM of the existing Digital Twin system.
-It reads completed run artifacts and never triggers simulation on page load.
+    py -m streamlit run dashboard/app.py
+
+The dashboard sits downstream of the existing Digital Twin system. Rendering a page
+reads artifacts and the dashboard's own SQLite file -- it never starts a simulation,
+never runs a model, and never launches a factory run on load. The RUN FACTORY control
+is explicit and hands execution to the existing CLI pipeline.
+
+Every prerequisite is optional at startup: a missing factory.json, a missing database,
+an empty run history, absent prediction files and an idle runtime all render as empty
+states.
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-# Ensure project root is importable
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import streamlit as st
+import streamlit as st  # noqa: E402
 
-from dashboard.config import DashboardConfig, load_config
-from dashboard.factory.manager import ensure_factory, load_factory, validate_factory_file
-from dashboard.storage.database import DashboardDatabase
+from dashboard.context import DashboardContext, build_context  # noqa: E402
+from dashboard.factory.manager import FactoryStatus  # noqa: E402
+from dashboard.views import (  # noqa: E402
+    render_bottlenecks,
+    render_defects,
+    render_live_twin,
+    render_overview,
+    render_run_history,
+    render_sensor_coverage,
+    render_what_if,
+)
+
+ROLES = ("Supervisor", "Plant Manager", "Leadership")
+
+#: Selectable simulated-day lengths, mapped to (duration_ms, rough wall-clock estimate).
+#: The coordinated replay runs a particle filter over every event, so wall-clock time
+#: scales with simulated duration -- a full shift is a coffee break, not a crash.
+RUN_DURATIONS: dict[str, tuple[int, str]] = {
+    "Full shift — 8 simulated hours": (28_800_000, "20-30 minutes"),
+    "Half shift — 4 simulated hours": (14_400_000, "10-15 minutes"),
+    "Short — 1 simulated hour": (3_600_000, "3-5 minutes"),
+    "Smoke test — 10 simulated minutes": (600_000, "under a minute"),
+}
+
+PAGES = {
+    "Overview": render_overview,
+    "Live Twin": render_live_twin,
+    "Bottlenecks": render_bottlenecks,
+    "Defects": render_defects,
+    "Sensor Coverage": render_sensor_coverage,
+    "What-If": render_what_if,
+    "Run History": render_run_history,
+}
+
+_STATUS_ICON = {
+    FactoryStatus.VALID: "🟢",
+    FactoryStatus.INVALID: "🟠",
+    FactoryStatus.MISSING: "🔴",
+}
 
 
-def _init_config() -> DashboardConfig:
-    """Load dashboard configuration (cached per session)."""
-    if "config" not in st.session_state:
-        st.session_state["config"] = load_config()
-    return st.session_state["config"]
+def get_context() -> DashboardContext:
+    """Build the context once per session and reuse it across reruns."""
+    if "context" not in st.session_state:
+        st.session_state["context"] = build_context()
+    return st.session_state["context"]
 
 
-def _init_database(config: DashboardConfig) -> DashboardDatabase | None:
-    """Initialize the dashboard database, returning None on failure."""
-    if "db" not in st.session_state:
-        try:
-            db = DashboardDatabase(config.database_path)
-            db.initialize()
-            st.session_state["db"] = db
-        except Exception as exc:
-            st.session_state["db"] = None
-            st.session_state["db_error"] = str(exc)
-    return st.session_state.get("db")
+def _render_factory_block(context: DashboardContext) -> None:
+    st.caption("Factory")
+    st.code(str(context.config.factory_path), language=None)
+    status = context.factory.status
+    st.markdown(f"{_STATUS_ICON.get(status, '⚪')} **{status}**")
+
+    if status == FactoryStatus.VALID:
+        st.caption(
+            f"{context.factory.station_count} stations · "
+            f"{context.factory.dark_zone_count} DARK zone(s)"
+        )
+        if context.factory.is_demo:
+            st.caption("⚠️ Generated demo configuration — illustrative, not plant data.")
+        for warning in context.factory.validation.warnings:
+            st.caption(f"⚠️ {warning}")
+    elif status == FactoryStatus.INVALID:
+        with st.expander("Why is this invalid?"):
+            for error in context.factory.validation.errors:
+                st.markdown(f"- {error}")
+        st.caption("The file was left untouched. Fix it, or point the dashboard elsewhere.")
+    else:
+        st.caption("No configuration at this path.")
+        if st.button("Generate demo factory", use_container_width=True):
+            _generate_demo_factory(context)
 
 
-def _factory_status(config: DashboardConfig) -> tuple[str, str, dict | None]:
-    """Determine factory file status.
+def _generate_demo_factory(context: DashboardContext) -> None:
+    from dashboard.factory.manager import generate_demo_factory
 
-    Returns (status_label, status_emoji, factory_data_or_None).
-    """
-    factory_path = config.factory_json_path
-    if not factory_path.is_file():
-        return "MISSING", "🔴", None
     try:
-        valid, errors = validate_factory_file(factory_path)
-        if valid:
-            data = load_factory(factory_path)
-            return "VALID", "🟢", data
-        else:
-            return "INVALID", "🟡", None
-    except Exception:
-        return "INVALID", "🟡", None
+        generate_demo_factory(context.config.factory_path, seed=context.config.demo_seed)
+    except FileExistsError:
+        st.warning("A factory configuration already exists at that path; nothing was changed.")
+    except Exception as error:
+        st.error(f"Could not generate a demo factory: {error}")
+    else:
+        context.refresh_factory()
+        st.rerun()
 
 
-def _render_sidebar(config: DashboardConfig) -> str:
-    """Render the sidebar and return the selected navigation page."""
+def _render_current_run_block(context: DashboardContext) -> None:
+    st.caption("Current Run")
+    latest = context.latest_run()
+    if latest is None:
+        st.markdown("**Run:** —")
+        st.markdown("**Production Day:** —")
+        st.caption("No completed production runs yet.")
+        return
+    st.markdown(f"**Run:** `{latest.run_id}`")
+    st.markdown(f"**Production Day:** {latest.production_day}")
+    st.caption(f"Status: {latest.status.value}" + ("  ·  demo" if latest.is_demo else ""))
+
+
+def _render_sidebar(context: DashboardContext) -> str:
     with st.sidebar:
         st.title("DIGITALTWIN.AI")
         st.divider()
-
-        # Factory status
-        st.subheader("Factory")
-        status_label, status_emoji, factory_data = _factory_status(config)
-        st.text_input(
-            "Factory Path",
-            str(config.factory_json_path),
-            disabled=True,
-            label_visibility="collapsed",
-        )
-        st.markdown(f"**Status:** {status_emoji} {status_label}")
-
-        if factory_data:
-            stations = factory_data.get("stations", [])
-            dark_zones = factory_data.get("darkZones", [])
-            st.caption(
-                f"{len(stations)} stations · {len(dark_zones)} dark zone(s)"
-            )
-
-        if status_label == "MISSING":
-            if st.button("Generate Demo Factory", type="secondary"):
-                try:
-                    ensure_factory(config.factory_json_path)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Failed to generate demo factory: {exc}")
-
+        _render_factory_block(context)
+        st.divider()
+        _render_current_run_block(context)
         st.divider()
 
-        # Current run info
-        st.subheader("Current Run")
-        db = st.session_state.get("db")
-        current_run_display = "—"
-        production_day_display = "—"
-
-        if db and db.is_initialized():
-            try:
-                from dashboard.storage.repositories import RunRepository
-                repo = RunRepository(db)
-                runs = repo.list_runs(limit=1)
-                if runs:
-                    latest = runs[0]
-                    current_run_display = latest.run_id
-                    production_day_display = str(latest.production_day)
-            except Exception:
-                pass
-
-        st.markdown(f"**Run:** {current_run_display}")
-        st.markdown(f"**Production Day:** {production_day_display}")
-
-        st.divider()
-
-        # Role selector
-        st.subheader("Role")
-        role = st.selectbox(
-            "View as",
-            options=["Supervisor", "Plant Manager", "Leadership"],
-            index=0,
-            label_visibility="collapsed",
-        )
+        st.caption("Role")
+        role = st.selectbox("Role", ROLES, index=0, label_visibility="collapsed")
         st.session_state["role"] = role
 
         st.divider()
-
-        # Navigation
-        st.subheader("Navigation")
-        pages = [
-            "🏠 Overview",
-            "🏭 Live Twin",
-            "🚧 Bottlenecks",
-            "🔍 Defects",
-            "📡 Sensor Coverage",
-            "🔮 What-If",
-            "📋 Run History",
-        ]
-        selected = st.radio(
-            "Go to",
-            options=pages,
-            index=0,
-            label_visibility="collapsed",
-        )
+        st.caption("Navigation")
+        page = st.radio("Navigation", list(PAGES), index=0, label_visibility="collapsed")
 
         st.divider()
-
-        # Database info
-        db_status = "🟢 Connected" if (db and db.is_initialized()) else "🔴 Not initialized"
-        st.caption(f"Database: {db_status}")
-        if db and db.is_initialized():
-            version = db.schema_version()
-            st.caption(f"Schema version: {version}")
-
-    return selected
-
-
-def _render_overview(config: DashboardConfig) -> None:
-    """Render the overview / home page."""
-    st.header("🏠 Overview")
-
-    col1, col2, col3 = st.columns(3)
-    status_label, _, factory_data = _factory_status(config)
-
-    with col1:
-        st.metric("Factory Status", status_label)
-    with col2:
-        if factory_data:
-            st.metric("Stations", len(factory_data.get("stations", [])))
+        if context.database_ready:
+            st.caption(f"Database: ready (schema v{context.database.schema_version()})")
         else:
-            st.metric("Stations", "—")
-    with col3:
-        db = st.session_state.get("db")
-        if db and db.is_initialized():
-            from dashboard.storage.repositories import RunRepository
-            repo = RunRepository(db)
-            st.metric("Total Runs", repo.count_runs())
-        else:
-            st.metric("Total Runs", "—")
+            st.caption("Database: unavailable")
+            if context.database_error:
+                st.caption(context.database_error)
+    return page
 
-    st.info(
-        "Welcome to the DigitalTwin.ai Dashboard. "
-        "This is a prototype stakeholder interface. "
-        "Use the sidebar to navigate between views."
-    )
 
-    if status_label == "MISSING":
-        st.warning(
-            "No factory configuration found. "
-            "Use the **Generate Demo Factory** button in the sidebar, "
-            "or place your factory.json at the configured path."
+def _render_run_factory_control(context: DashboardContext) -> None:
+    """The RUN FACTORY action. Never fires on page load; never runs a simulation here."""
+    readiness = context.readiness()
+    left, right = st.columns([1, 3])
+    with left:
+        clicked = st.button(
+            "▶  RUN FACTORY",
+            type="primary",
+            use_container_width=True,
+            disabled=not readiness.ready,
         )
+    with right:
+        for blocker in readiness.blockers:
+            st.warning(blocker)
+        for warning in readiness.warnings:
+            st.caption(f"⚠️ {warning}")
 
+    if clicked:
+        st.session_state["show_run_plan"] = True
+    if not st.session_state.get("show_run_plan") or context.run_manager is None:
+        return
 
-def _render_placeholder(page_name: str) -> None:
-    """Render a placeholder page for features not yet implemented."""
-    st.header(page_name)
-    st.info(
-        f"The **{page_name}** view is a placeholder. "
-        "It will be implemented in a future iteration."
+    duration_label = st.selectbox(
+        "Simulated production day",
+        list(RUN_DURATIONS),
+        index=0,
+        help=(
+            "Shorter days finish sooner. The coordinated replay runs a particle filter "
+            "over every event, so wall-clock time scales with simulated duration."
+        ),
+    )
+    duration_ms, wall_clock = RUN_DURATIONS[duration_label]
+    plan = context.run_manager.plan_next_run(duration_ms=duration_ms)
+
+    st.subheader(f"Run plan · {plan.run_id}")
+    st.caption(
+        "One run = one simulated production day. Dashboard-triggered execution is not "
+        "wired up in this prototype step — run the command below, then use Run History "
+        "→ Rebuild from artifacts to ingest the results."
+    )
+    st.caption(f"⏱️ Expect roughly **{wall_clock}** of wall-clock time. It is not hung.")
+
+    for note in plan.notes:
+        st.caption(f"ℹ️ {note}")
+
+    if not plan.runnable:
+        st.error("This run cannot start yet:")
+        for blocker in plan.blockers:
+            st.markdown(f"- {blocker}")
+        st.caption("Resolve the above and press RUN FACTORY again for an updated command.")
+        return
+
+    shell = st.radio(
+        "Shell",
+        ["powershell", "cmd", "bash"],
+        horizontal=True,
+        index=0 if sys.platform.startswith("win") else 2,
+    )
+    st.code(plan.command_line(shell), language="bash")
+    st.caption(
+        "Verified before display: destination directories are free, the bottleneck model "
+        "can score every station in this factory, and the defect consumer's dependencies "
+        "are installed."
     )
 
 
 def main() -> None:
-    """Main Streamlit application entry point."""
     st.set_page_config(
         page_title="DigitalTwin.ai",
         page_icon="🏭",
@@ -216,29 +227,19 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    config = _init_config()
-    db = _init_database(config)
+    context = get_context()
+    page = _render_sidebar(context)
 
-    selected_page = _render_sidebar(config)
+    st.title("DIGITALTWIN.AI")
+    st.caption(f"Prototype dashboard · viewing as {st.session_state.get('role', ROLES[0])}")
 
-    # Route to the selected page
-    if selected_page == "📋 Run History":
-        from dashboard.views.run_history import render_run_history
-        render_run_history(db)
-    elif selected_page == "🏠 Overview":
-        _render_overview(config)
-    elif selected_page == "🏭 Live Twin":
-        _render_placeholder("Live Twin")
-    elif selected_page == "🚧 Bottlenecks":
-        _render_placeholder("Bottlenecks")
-    elif selected_page == "🔍 Defects":
-        _render_placeholder("Defects")
-    elif selected_page == "📡 Sensor Coverage":
-        _render_placeholder("Sensor Coverage")
-    elif selected_page == "🔮 What-If":
-        _render_placeholder("What-If")
-    else:
-        _render_placeholder(selected_page)
+    for notice in context.notices:
+        st.info(notice)
+
+    _render_run_factory_control(context)
+    st.divider()
+
+    PAGES[page](context)
 
 
 if __name__ == "__main__":

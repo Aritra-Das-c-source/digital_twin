@@ -1,1 +1,1 @@
-"""Dashboard test package."""
+"""Dashboard tests."""

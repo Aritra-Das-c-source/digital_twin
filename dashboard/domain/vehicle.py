@@ -1,10 +1,20 @@
-"""Vehicle domain model — placeholder for future dashboard features."""
+"""Vehicle (production unit) model.
+
+Placeholder for later per-vehicle views. Defect risk is a vehicle-quality signal and is
+kept distinct from station-level bottleneck risk; the two are never combined.
+"""
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 
 @dataclass
 class Vehicle:
-    """Represents a production unit/vehicle in the factory."""
+    """One production unit as identified in the defect prediction stream."""
+
     unit_id: str
-    vehicle_model: str | None = None
+    #: Last station the unit was observed or inferred at.
+    station_id: str | None = None
+    #: `LIGHT` or `DARK_INFERRED`, per the defect prediction contract.
+    route: str | None = None

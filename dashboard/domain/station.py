@@ -1,4 +1,10 @@
-"""Station domain model representing a factory assembly station."""
+"""Station model, mirroring the ``factory.json`` station contract.
+
+DARK membership is a property of the factory's ``darkZones``, not of
+``sensorCoverage`` -- a DARK station may still emit telemetry, and a LIGHT station may
+have none. :meth:`Station.from_factory` keeps them separate for that reason.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +13,7 @@ from typing import Any
 
 @dataclass
 class Station:
-    """Represents a factory station."""
+    """One station on the configured line."""
 
     id: int
     name: str
@@ -18,18 +24,46 @@ class Station:
     sensor_coverage: str
     is_source: bool = False
     is_sink: bool = False
+    #: True when this station falls inside a configured DARK corridor.
+    is_dark: bool = False
+    dark_zone_id: str | None = None
+
+    @property
+    def zone(self) -> str:
+        """`DARK` or `LIGHT`, matching the prediction streams' `zone` field."""
+        return "DARK" if self.is_dark else "LIGHT"
 
     @classmethod
-    def from_factory_dict(cls, data: dict[str, Any]) -> Station:
-        """Create a Station instance from a factory.json dictionary entry."""
+    def from_factory(cls, data: dict[str, Any], dark_zones: list[dict[str, Any]] | None = None) -> Station:
+        """Build a station from a ``factory.json`` entry, resolving DARK membership."""
+        station_id = int(data["id"])
+        zone_id: str | None = None
+        for zone in dark_zones or []:
+            start, end = zone.get("startStationId"), zone.get("endStationId")
+            if isinstance(start, int) and isinstance(end, int) and start <= station_id <= end:
+                zone_id = str(zone.get("id")) if zone.get("id") else None
+                break
         return cls(
-            id=int(data["id"]),
-            name=str(data["name"]),
-            archetype=str(data["archetype"]),
-            mean_cycle_time_ms=int(data.get("meanCycleTimeMs", data.get("mean_cycle_time_ms", 0))),
-            cycle_time_cv=float(data.get("cycleTimeCV", data.get("cycle_time_cv", 0.0))),
-            buffer_capacity=int(data.get("bufferCapacity", data.get("buffer_capacity", 0))),
-            sensor_coverage=str(data.get("sensorCoverage", data.get("sensor_coverage", "NONE"))),
-            is_source=bool(data.get("source", data.get("is_source", False))),
-            is_sink=bool(data.get("sink", data.get("is_sink", False))),
+            id=station_id,
+            name=str(data.get("name", f"Station {station_id}")),
+            archetype=str(data.get("archetype", "AUTOMATED")),
+            mean_cycle_time_ms=int(data.get("meanCycleTimeMs", 0)),
+            cycle_time_cv=float(data.get("cycleTimeCV", 0.0)),
+            buffer_capacity=int(data.get("bufferCapacity", 0)),
+            sensor_coverage=str(data.get("sensorCoverage", "NONE")),
+            is_source=data.get("source") is True,
+            is_sink=data.get("sink") is True,
+            is_dark=zone_id is not None,
+            dark_zone_id=zone_id,
         )
+
+    @classmethod
+    def all_from_factory(cls, factory: dict[str, Any]) -> list[Station]:
+        """Build every station from a validated factory payload, in line order."""
+        zones = factory.get("darkZones") or []
+        stations = [
+            cls.from_factory(entry, zones)
+            for entry in factory.get("stations", [])
+            if isinstance(entry, dict)
+        ]
+        return sorted(stations, key=lambda station: station.id)

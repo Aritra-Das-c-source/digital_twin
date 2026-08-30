@@ -1,4 +1,5 @@
-"""Tests for dashboard.orchestration.existing_runtime_adapter."""
+"""Adapter tests: the dashboard's only seam onto the existing system."""
+
 from __future__ import annotations
 
 import json
@@ -6,94 +7,246 @@ from pathlib import Path
 
 import pytest
 
-from dashboard.orchestration.existing_runtime_adapter import ExistingRuntimeAdapter
+from dashboard.orchestration.existing_runtime_adapter import (
+    COMPLETED_RUN_FILES,
+    COORDINATED_RUN_FILES,
+    PATHWAY_BOTTLENECK,
+    PATHWAY_COORDINATED,
+    AdapterBoundary,
+    ExistingRuntimeAdapter,
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
-def project_root() -> Path:
-    """Return the actual project root for integration-level adapter tests."""
-    return Path(__file__).resolve().parents[2]
+def adapter() -> ExistingRuntimeAdapter:
+    return ExistingRuntimeAdapter(PROJECT_ROOT)
 
 
-@pytest.fixture
-def adapter(project_root: Path) -> ExistingRuntimeAdapter:
-    return ExistingRuntimeAdapter(project_root)
+def _make_run(root: Path, name: str = "run_0001", *, coordinated: bool = False) -> Path:
+    run = root / name
+    run.mkdir(parents=True, exist_ok=True)
+    names = COORDINATED_RUN_FILES if coordinated else COMPLETED_RUN_FILES
+    for filename in names:
+        if filename.endswith(".json"):
+            (run / filename).write_text(json.dumps({"run_id": name}), encoding="utf-8")
+        else:
+            (run / filename).write_text("header\n", encoding="utf-8")
+    return run
 
 
-class TestExistingRuntimeAdapter:
-    """Test the adapter's read-only discovery operations."""
-
-    def test_default_factory_path(self, adapter: ExistingRuntimeAdapter) -> None:
-        path = adapter.default_factory_path()
-        assert path.name == "factory.json"
-        assert "simulation" in str(path) or "config" in str(path)
-
-    def test_discover_factory_finds_existing(self, adapter: ExistingRuntimeAdapter) -> None:
-        factory = adapter.discover_factory()
-        # The real factory.json should exist in the test repo
-        if factory is not None:
-            assert factory.name == "factory.json"
-            assert factory.is_file()
-
-    def test_is_completed_run_on_empty_dir(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        assert adapter.is_completed_run(tmp_path) is False
-
-    def test_is_completed_run_with_required_files(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        run = tmp_path / "run_0001"
-        run.mkdir()
-        for name in ("stations.csv", "units.csv", "station_events.csv", "run_metadata.json"):
-            (run / name).write_text("test", encoding="utf-8")
-        assert adapter.is_completed_run(run) is True
-
-    def test_is_system_completed_run_missing_extra(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        run = tmp_path / "run_0001"
-        run.mkdir()
-        # Only basic files, not system-level files
-        for name in ("stations.csv", "units.csv", "station_events.csv", "run_metadata.json"):
-            (run / name).write_text("test", encoding="utf-8")
-        assert adapter.is_system_completed_run(run) is False
-
-    def test_is_system_completed_run_with_all_files(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        run = tmp_path / "run_0001"
-        run.mkdir()
-        all_files = (
-            "stations.csv", "units.csv", "station_events.csv", "run_metadata.json",
-            "runtime_events.csv", "dz.csv", "station_checkpoints.csv",
+class TestDiscovery:
+    def test_default_factory_path_matches_cli(self, adapter: ExistingRuntimeAdapter):
+        assert adapter.default_factory_path() == (
+            PROJECT_ROOT / "simulation" / "config" / "factory.json"
         )
-        for name in all_files:
-            (run / name).write_text("test", encoding="utf-8")
-        assert adapter.is_system_completed_run(run) is True
 
-    def test_read_run_metadata_returns_none_for_missing(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
+    def test_discover_factory_prefers_configured(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        configured = tmp_path / "factory.json"
+        configured.write_text("{}", encoding="utf-8")
+        assert adapter.discover_factory(configured) == configured.resolve()
+
+    def test_discover_factory_falls_back_to_repository_default(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        found = adapter.discover_factory(tmp_path / "absent.json")
+        assert found is None or found.name == "factory.json"
+
+    def test_simulator_candidates_are_under_the_build_tree(
+        self, adapter: ExistingRuntimeAdapter
+    ):
+        for candidate in adapter.simulator_candidates():
+            assert "build" in candidate.parts
+
+    def test_resolve_simulator_never_builds(self, tmp_path: Path):
+        """A page render must never trigger a CMake build."""
+        isolated = ExistingRuntimeAdapter(tmp_path)
+        assert isolated.resolve_simulator() is None
+        assert isolated.simulator_available() is False
+        assert not (tmp_path / "simulation" / "build").exists()
+
+
+class TestCompletedRuns:
+    def test_empty_directory_is_not_a_completed_run(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        assert adapter.is_completed_run(tmp_path) is False
+        assert adapter.inspect_run(tmp_path) is None
+
+    def test_missing_files_are_named(self, adapter: ExistingRuntimeAdapter, tmp_path: Path):
+        assert set(adapter.missing_run_files(tmp_path)) == set(COMPLETED_RUN_FILES)
+
+    def test_base_completed_run(self, adapter: ExistingRuntimeAdapter, tmp_path: Path):
+        run = _make_run(tmp_path)
+        assert adapter.is_completed_run(run) is True
+        assert adapter.is_coordinated_ready(run) is False
+
+    def test_coordinated_ready_run(self, adapter: ExistingRuntimeAdapter, tmp_path: Path):
+        run = _make_run(tmp_path, coordinated=True)
+        assert adapter.is_coordinated_ready(run) is True
+
+    def test_inspect_reports_coordinated_gaps(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        run = _make_run(tmp_path)
+        inspected = adapter.inspect_run(run)
+        assert inspected is not None
+        assert inspected.run_id == "run_0001"
+        assert inspected.is_coordinated_ready is False
+        assert "runtime_events.csv" in inspected.missing
+
+    def test_list_completed_runs_handles_missing_root(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        assert adapter.list_completed_runs(tmp_path / "absent") == []
+        assert adapter.list_completed_runs(None) == []
+
+    def test_list_completed_runs_finds_flat_layout(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        for index in range(3):
+            _make_run(tmp_path, f"run_{index:04d}")
+        assert len(adapter.list_completed_runs(tmp_path)) == 3
+
+    def test_list_completed_runs_finds_nested_batches(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        _make_run(tmp_path / "batch_a")
+        _make_run(tmp_path / "batch_b")
+        found = adapter.list_completed_runs(tmp_path)
+        assert len(found) == 2
+
+    def test_run_metadata_is_parsed(self, adapter: ExistingRuntimeAdapter, tmp_path: Path):
+        run = _make_run(tmp_path)
+        assert (adapter.read_run_metadata(run) or {})["run_id"] == "run_0001"
+
+    def test_run_metadata_missing_is_none(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
         assert adapter.read_run_metadata(tmp_path) is None
 
-    def test_read_run_metadata_parses_json(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        metadata = {"units_created": 100, "duration_ms": 28800000}
-        (tmp_path / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-        result = adapter.read_run_metadata(tmp_path)
-        assert result is not None
-        assert result["units_created"] == 100
 
-    def test_read_system_health_returns_none_for_missing(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
+class TestPredictionArtifacts:
+    def test_output_paths_use_contract_filenames(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        paths = adapter.prediction_output_paths(tmp_path)
+        assert paths["bottleneck"].name == "bottleneck_predictions.jsonl"
+        assert paths["defect"].name == "defect_predictions.jsonl"
+        assert paths["health"].name == "system_health.json"
+        assert paths["manifest"].name == "system_run_manifest.json"
+
+    def test_streams_stay_separate(self, adapter: ExistingRuntimeAdapter, tmp_path: Path):
+        paths = adapter.prediction_output_paths(tmp_path)
+        assert paths["bottleneck"] != paths["defect"]
+
+    def test_missing_health_and_manifest_are_none(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        assert adapter.read_system_health(tmp_path) is None
+        assert adapter.read_system_manifest(tmp_path) is None
+
+    def test_health_and_manifest_are_read(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        (tmp_path / "system_health.json").write_text(
+            json.dumps({"overall_status": "PASS"}), encoding="utf-8"
+        )
+        (tmp_path / "system_run_manifest.json").write_text(
+            json.dumps({"run_id": "r"}), encoding="utf-8"
+        )
+        assert (adapter.read_system_health(tmp_path) or {})["overall_status"] == "PASS"
+        assert (adapter.read_system_manifest(tmp_path) or {})["run_id"] == "r"
+
+    def test_corrupt_artifact_degrades_to_none(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        (tmp_path / "system_health.json").write_text("{broken", encoding="utf-8")
         assert adapter.read_system_health(tmp_path) is None
 
-    def test_list_completed_runs_on_empty_dir(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        result = adapter.list_completed_runs(tmp_path)
-        assert result == []
 
-    def test_list_completed_runs_finds_runs(self, adapter: ExistingRuntimeAdapter, tmp_path: Path) -> None:
-        for i in range(3):
-            run = tmp_path / f"run_{i:04d}"
-            run.mkdir()
-            for name in ("stations.csv", "units.csv", "station_events.csv", "run_metadata.json"):
-                (run / name).write_text("test", encoding="utf-8")
-        result = adapter.list_completed_runs(tmp_path)
-        assert len(result) == 3
+class TestExistingFunctionReuse:
+    def test_scenario_generator_is_the_existing_one(self, adapter: ExistingRuntimeAdapter):
+        generate = adapter.scenario_generator()
+        assert generate is not None
+        assert generate.__module__.endswith("scenario_generator")
+        assert generate.__name__ == "generate"
 
-    def test_prepare_random_run_not_implemented(self, adapter: ExistingRuntimeAdapter) -> None:
-        with pytest.raises(NotImplementedError):
-            adapter.prepare_random_run()
+    def test_run_orchestrator_is_the_existing_one(self, adapter: ExistingRuntimeAdapter):
+        run_generated = adapter.run_orchestrator()
+        assert run_generated is not None
+        assert run_generated.__module__.endswith("orchestrator")
+        assert run_generated.__name__ == "run_generated"
 
-    def test_start_run_not_implemented(self, adapter: ExistingRuntimeAdapter) -> None:
-        with pytest.raises(NotImplementedError):
-            adapter.start_run()
+
+class TestRunPlanning:
+    def _plan(self, adapter: ExistingRuntimeAdapter, tmp_path: Path, **overrides):
+        options = {
+            "factory_path": tmp_path / "factory.json",
+            "generated_dir": tmp_path / "generated",
+            "runs_dir": tmp_path / "runs",
+            "output_dir": tmp_path / "out",
+            "run_id": "production_day_0001",
+            "seed": 7,
+            "duration_ms": 600_000,
+        }
+        options.update(overrides)
+        return adapter.plan_random_run(**options)
+
+    def test_coordinated_plan_uses_the_existing_cli_entry_point(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        plan = self._plan(adapter, tmp_path)
+        assert plan.command[1].endswith("cli.py")
+        assert plan.command[2:5] == ["system", "run", "random"]
+        assert "--output-dir" in plan.command
+
+    def test_coordinated_plan_has_no_multiplier(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        """`system run random` exposes no --mult; the replay is not paced."""
+        plan = self._plan(adapter, tmp_path)
+        assert plan.multiplier is None
+        assert "--mult" not in plan.command
+
+    def test_bottleneck_plan_carries_the_multiplier(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        plan = self._plan(adapter, tmp_path, pathway=PATHWAY_BOTTLENECK, multiplier=30.0)
+        assert plan.command[2:4] == ["run", "random"]
+        assert plan.multiplier == 30.0
+        assert plan.command[plan.command.index("--mult") + 1] == "30.0"
+
+    def test_unknown_pathway_is_rejected(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        with pytest.raises(ValueError):
+            self._plan(adapter, tmp_path, pathway="magic")
+
+    def test_expected_run_dir_matches_cli_naming(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        assert self._plan(adapter, tmp_path).expected_run_dir.name == "run_0001"
+
+    def test_planning_writes_nothing(self, adapter: ExistingRuntimeAdapter, tmp_path: Path):
+        plan = self._plan(adapter, tmp_path)
+        assert not plan.generated_dir.exists()
+        assert not plan.runs_dir.exists()
+        assert not plan.output_dir.exists()
+
+    def test_execute_is_a_documented_boundary(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        plan = self._plan(adapter, tmp_path)
+        with pytest.raises(AdapterBoundary) as excinfo:
+            adapter.execute_planned_run(plan)
+        assert "cli.py" in excinfo.value.command_line
+
+    def test_prepare_without_a_simulator_raises_a_boundary(self, tmp_path: Path):
+        isolated = ExistingRuntimeAdapter(tmp_path)
+        plan = self._plan(isolated, tmp_path, pathway=PATHWAY_COORDINATED)
+        with pytest.raises(AdapterBoundary):
+            isolated.prepare_random_run(plan)

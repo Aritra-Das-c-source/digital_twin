@@ -1,51 +1,94 @@
-"""Configuration module for the DigitalTwin.ai dashboard."""
+"""Dashboard configuration.
+
+Every path the dashboard touches is declared here and overridable by environment
+variable, so the dashboard can be pointed at a different factory, database, or run root
+without code changes. Defaults deliberately match the existing repository layout
+(``cli.py``'s ``DEFAULT_FACTORY``, ``DEFAULT_RUNS``, ``DEFAULT_GENERATED`` and
+``system_runtime``'s ``DEFAULT_OUTPUT_DIR``) so the dashboard reads the same artifacts
+the existing tooling writes.
+"""
+
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
+#: Environment variable names, documented so operators can find them.
+ENV_FACTORY = "DT_DASHBOARD_FACTORY"
+ENV_DATABASE = "DT_DASHBOARD_DB"
+ENV_RUNS_ROOT = "DT_DASHBOARD_RUNS"
+ENV_GENERATED_ROOT = "DT_DASHBOARD_GENERATED"
+ENV_PREDICTIONS_ROOT = "DT_DASHBOARD_PREDICTIONS"
+ENV_DEMO_SEED = "DT_DASHBOARD_DEMO_SEED"
+ENV_ALLOW_DEMO_FACTORY = "DT_DASHBOARD_ALLOW_DEMO_FACTORY"
 
-@dataclass
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _env_path(name: str, default: Path) -> Path:
+    value = os.environ.get(name)
+    return Path(value).expanduser() if value else default
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
 class DashboardConfig:
-    """Configuration settings for the dashboard."""
+    """Resolved paths and defaults for one dashboard process."""
 
-    project_root: Path = field(
-        default_factory=lambda: Path(__file__).resolve().parents[1]
-    )
-    factory_json_path: Path = field(default=None)  # type: ignore[assignment]
-    database_path: Path = field(default=None)  # type: ignore[assignment]
-    runs_root: Path = field(default=None)  # type: ignore[assignment]
-    generated_root: Path = field(default=None)  # type: ignore[assignment]
-    runtime_output_root: Path = field(default=None)  # type: ignore[assignment]
+    project_root: Path
+    #: Authoritative factory topology, shared with the simulator and runtime.
+    factory_path: Path
+    #: Dashboard-owned SQLite file. Safe to delete.
+    database_path: Path
+    #: Where the existing pipeline writes completed simulator run directories.
+    runs_root: Path
+    #: Where the existing scenario generator writes scenario/defect pairs.
+    generated_root: Path
+    #: Where the coordinated runtime writes prediction streams, health and manifests.
+    predictions_root: Path
+    #: Seed used when a demo factory has to be generated.
+    demo_seed: int = 42
+    #: Whether a missing factory.json may be filled in with a demo definition.
+    allow_demo_factory: bool = True
+    #: Defaults mirroring `cli.py`'s random-run options; used to describe a planned run.
     default_seed: int = 42
     default_duration_ms: int = 28_800_000
     default_multiplier: float = 60.0
 
-    def __post_init__(self) -> None:
-        if self.factory_json_path is None:
-            self.factory_json_path = self.project_root / "simulation" / "config" / "factory.json"
-        if self.database_path is None:
-            self.database_path = self.project_root / "dashboard" / "dashboard.db"
-        if self.runs_root is None:
-            self.runs_root = self.project_root / "simulation" / "training" / "runs"
-        if self.generated_root is None:
-            self.generated_root = self.project_root / "simulation" / "training" / "generated"
-        if self.runtime_output_root is None:
-            self.runtime_output_root = self.project_root / "runtime_output"
+    @property
+    def dashboard_root(self) -> Path:
+        return self.project_root / "dashboard"
 
 
-def load_config() -> DashboardConfig:
-    """Load dashboard configuration, reading environment variables for overrides if present."""
-    config = DashboardConfig()
-    if "DT_FACTORY_JSON" in os.environ:
-        config.factory_json_path = Path(os.environ["DT_FACTORY_JSON"])
-    if "DT_DASHBOARD_DB" in os.environ:
-        config.database_path = Path(os.environ["DT_DASHBOARD_DB"])
-    if "DT_RUNS_ROOT" in os.environ:
-        config.runs_root = Path(os.environ["DT_RUNS_ROOT"])
-    if "DT_GENERATED_ROOT" in os.environ:
-        config.generated_root = Path(os.environ["DT_GENERATED_ROOT"])
-    if "DT_RUNTIME_OUTPUT" in os.environ:
-        config.runtime_output_root = Path(os.environ["DT_RUNTIME_OUTPUT"])
-    return config
+def load_config(project_root: Path | None = None) -> DashboardConfig:
+    """Build the configuration, applying environment overrides."""
+    root = Path(project_root) if project_root else _PROJECT_ROOT
+    return DashboardConfig(
+        project_root=root,
+        factory_path=_env_path(ENV_FACTORY, root / "simulation" / "config" / "factory.json"),
+        database_path=_env_path(ENV_DATABASE, root / "dashboard" / "data" / "dashboard.db"),
+        runs_root=_env_path(ENV_RUNS_ROOT, root / "simulation" / "training" / "runs"),
+        generated_root=_env_path(
+            ENV_GENERATED_ROOT, root / "simulation" / "training" / "generated"
+        ),
+        predictions_root=_env_path(ENV_PREDICTIONS_ROOT, root / "runtime_output"),
+        demo_seed=_env_int(ENV_DEMO_SEED, 42),
+        allow_demo_factory=_env_flag(ENV_ALLOW_DEMO_FACTORY, True),
+    )

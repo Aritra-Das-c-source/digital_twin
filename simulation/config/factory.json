@@ -34,7 +34,7 @@
   {"id":31,"name":"Vehicle Dispatch","archetype":"AUTOMATED","meanCycleTimeMs":35000,"cycleTimeCV":0.08,"bufferCapacity":4,"sensorCoverage":"PARTIAL","sink":true}
  ],
  "darkZones":[
-  {"id":"DZ_BODY_01","name":"Legacy Body Alignment Section","startStationId":11,"endStationId":14,"observability":{"sensorTelemetry":true,"manualChecks":true,"checkpoints":true}}
+  {"id":"DZ_BODY_01","name":"Legacy Body Alignment Section","startStationId":11,"endStationId":13,"observability":{"sensorTelemetry":true,"manualChecks":true,"checkpoints":true}}
  ],
  "checkpoints":[
   {"id":"CP_ALIGN_RFID","stationId":12,"type":"RFID","progress":0.45,"reliability":0.90,"falsePositiveRate":0.01,"identifiesUnit":true},

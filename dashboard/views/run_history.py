@@ -1,136 +1,153 @@
-"""Run History view — displays persisted completed production runs."""
+"""Run History view.
+
+Shows the runs the dashboard has actually ingested. No history is invented: with an
+empty database the view says so and offers a rebuild from completed run artifacts on
+disk, which is the supported way to repopulate after the database is deleted.
+
+Analytics are out of scope here. Selecting a run stores its id in session state so later
+views can scope themselves to it.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import streamlit as st
+
 if TYPE_CHECKING:
-    from dashboard.storage.database import DashboardDatabase
+    from dashboard.context import DashboardContext
+    from dashboard.domain.run import Run
+
+SELECTED_RUN_KEY = "selected_run_id"
+
+_STATUS_ICON = {
+    "COMPLETED": "✅",
+    "RUNNING": "🔄",
+    "PENDING": "⏳",
+    "PARTIAL": "⚠️",
+    "FAILED": "❌",
+}
 
 
-def render_run_history(db: DashboardDatabase | None) -> None:
-    """Render the Run History page in Streamlit.
+def render_run_history(context: DashboardContext) -> None:
+    st.header("Run History")
+    st.caption("One completed run = one simulated production day.")
 
-    Shows a table of completed production runs from the dashboard database,
-    or an informational message when no runs exist yet.
-    """
-    import streamlit as st
-
-    st.header("📋 Run History")
-
-    if db is None or not db.is_initialized():
-        st.info(
-            "Dashboard database is not initialized. "
-            "No historical run data is available."
+    if not context.database_ready or context.repository is None:
+        st.warning(
+            "The dashboard database is unavailable, so no run history can be shown. "
+            "The rest of the system is unaffected."
         )
+        if context.database_error:
+            st.caption(context.database_error)
         return
 
-    # Import repository lazily to avoid import-time side effects
-    from dashboard.domain.run import Run, RunStatus
-    from dashboard.storage.repositories import RunRepository
-
-    repo = RunRepository(db)
-    total = repo.count_runs()
-
-    if total == 0:
-        st.info("No completed production runs yet.")
-        st.caption(
-            "Production runs will appear here after the factory is executed "
-            "and completed run artifacts are ingested into the dashboard."
-        )
+    runs = context.run_history()
+    if not runs:
+        _render_empty_state(context)
         return
 
-    st.caption(f"{total} production run(s) recorded")
-
-    runs = repo.list_runs(limit=200)
-
-    # Build table data
-    rows = []
-    for run in runs:
-        rows.append({
-            "Production Day": run.production_day,
-            "Run ID": run.run_id,
-            "Scenario": run.scenario_name or "—",
-            "Multiplier": f"{run.multiplier:.1f}×",
-            "Status": _status_badge(run.status),
-            "Started": _format_time(run.started_at),
-            "Completed": _format_time(run.completed_at),
-            "Demo": "🏷️ Demo" if run.is_demo else "",
-        })
-
+    st.caption(f"{len(runs)} production run(s) recorded")
     st.dataframe(
-        rows,
+        [_row(run) for run in runs],
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "Production Day": st.column_config.NumberColumn(format="%d"),
-            "Multiplier": st.column_config.TextColumn(),
-        },
     )
 
-    # Run selector for detailed inspection
-    st.subheader("Inspect Run")
-    run_ids = [r.run_id for r in runs]
-    selected_id = st.selectbox(
-        "Select a run to inspect",
-        options=run_ids,
+    _render_rebuild_control(context)
+
+    st.subheader("Inspect a run")
+    labels = {f"Day {run.production_day} — {run.run_id}": run.run_id for run in runs}
+    choice = st.selectbox(
+        "Select a production run",
+        options=list(labels),
         index=None,
-        placeholder="Choose a production run...",
+        placeholder="Choose a production run…",
     )
+    if choice:
+        run_id = labels[choice]
+        st.session_state[SELECTED_RUN_KEY] = run_id
+        selected = context.repository.get_run(run_id)
+        if selected is not None:
+            _render_detail(selected)
 
-    if selected_id:
-        selected_run = repo.get_run(selected_id)
-        if selected_run:
-            _render_run_detail(selected_run)
-            # Store in session state so other views can reference it
-            st.session_state["selected_run_id"] = selected_id
+
+def _render_empty_state(context: DashboardContext) -> None:
+    st.info("No completed production runs yet.")
+    st.caption(
+        "Runs appear here once the existing pipeline has produced completed run "
+        "artifacts and the dashboard has ingested them. Use RUN FACTORY above to see "
+        "the command for the next production day."
+    )
+    _render_rebuild_control(context)
 
 
-def _status_badge(status) -> str:
-    """Return a human-readable status string with emoji."""
-    from dashboard.domain.run import RunStatus
+def _render_rebuild_control(context: DashboardContext) -> None:
+    """Rebuild history from artifacts — the reason the database is safe to delete."""
+    if context.ingestor is None:
+        return
+    with st.expander("Rebuild history from completed run artifacts"):
+        st.caption(
+            f"Scans `{context.config.runs_root}` for completed run directories and "
+            "rebuilds the dashboard database from them. Reads only; the existing "
+            "system's artifacts are never modified."
+        )
+        if st.button("Rebuild from artifacts"):
+            try:
+                result = context.ingestor.rebuild_from_artifacts()
+            except Exception as error:
+                st.error(f"Rebuild failed: {error}")
+                return
+            if result.count:
+                st.success(f"Ingested {result.count} completed run(s).")
+                st.rerun()
+            else:
+                st.info("No completed run directories were found to ingest.")
+            if result.skipped:
+                st.caption(f"Skipped {len(result.skipped)} incomplete director(ies).")
 
-    mapping = {
-        RunStatus.PENDING: "⏳ Pending",
-        RunStatus.RUNNING: "🔄 Running",
-        RunStatus.COMPLETED: "✅ Completed",
-        RunStatus.FAILED: "❌ Failed",
-        RunStatus.PARTIAL: "⚠️ Partial",
+
+def _row(run: Run) -> dict[str, object]:
+    return {
+        "Production Day": run.production_day,
+        "Run ID": run.run_id,
+        "Scenario": run.scenario_name or "—",
+        "Multiplier": f"{run.multiplier:g}×" if run.multiplier else "—",
+        "Status": f"{_STATUS_ICON.get(run.status.value, '')} {run.status.value}".strip(),
+        "Completed": _timestamp(run.completed_at),
+        "Demo": "demo" if run.is_demo else "",
     }
-    return mapping.get(status, str(status))
 
 
-def _format_time(iso_str: str | None) -> str:
-    """Format an ISO timestamp for display."""
-    if not iso_str:
+def _timestamp(value: str | None) -> str:
+    if not value:
         return "—"
-    try:
-        # Show just date and time, no timezone
-        return iso_str[:19].replace("T", " ")
-    except (IndexError, TypeError):
-        return iso_str
+    return value[:19].replace("T", " ")
 
 
-def _render_run_detail(run) -> None:
-    """Render detailed information for a selected run."""
-    import json
+def _render_detail(run: Run) -> None:
+    if run.is_demo:
+        st.warning("Prototype/demo run — figures are illustrative, not measured plant data.")
 
-    import streamlit as st
-
-    col1, col2 = st.columns(2)
-    with col1:
+    left, right = st.columns(2)
+    with left:
         st.metric("Production Day", run.production_day)
-        st.metric("Status", _status_badge(run.status))
-        st.metric("Multiplier", f"{run.multiplier:.1f}×")
-    with col2:
+        st.metric("Status", run.status.value)
+        st.metric("Seed", run.seed if run.seed is not None else "—")
+    with right:
         st.metric("Scenario", run.scenario_name or "—")
-        st.metric("Demo Run", "Yes" if run.is_demo else "No")
-        if run.artifact_path:
-            st.text_input("Artifact Path", run.artifact_path, disabled=True)
+        st.metric(
+            "Simulated duration",
+            f"{run.duration_ms / 3_600_000:.1f} h" if run.duration_ms else "—",
+        )
+        st.metric("Multiplier", f"{run.multiplier:g}×" if run.multiplier else "—")
 
-    if run.metadata_json:
-        try:
-            metadata = json.loads(run.metadata_json)
-            with st.expander("Run Metadata"):
-                st.json(metadata)
-        except (json.JSONDecodeError, TypeError):
-            pass
+    st.caption(f"Factory: `{run.factory_path}`  ·  fingerprint `{run.factory_fingerprint or '—'}`")
+    if run.artifact_path:
+        st.caption(f"Run artifacts: `{run.artifact_path}`")
+    if run.predictions_path:
+        st.caption(f"Prediction outputs: `{run.predictions_path}`")
+
+    if run.metadata:
+        with st.expander("Recorded run metadata"):
+            st.json(run.metadata)
