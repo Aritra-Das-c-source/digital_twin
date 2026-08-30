@@ -315,26 +315,21 @@ void Simulation::scheduleCheckpointEvents(const Station &s, UnitId id)
             static_cast<Time>(std::round(cp.nominalProgressFraction * s.currentCycleTime));
         std::bernoulli_distribution occurs(cp.readReliability);
         if (occurs(checkpointRng))
-            checkpointEvents.push({nominal, SimEventType::CHECKPOINT_RECORDED, s.id, id, i});
+            events.push({nominal, SimEventType::CHECKPOINT_RECORDED, s.id, id, i});
     }
 }
-void Simulation::flushCheckpointEvents()
+void Simulation::handleCheckpointRecorded(const SimEvent &e)
 {
-    while (!checkpointEvents.empty())
-    {
-        auto e = checkpointEvents.top();
-        checkpointEvents.pop();
-        if (e.timestamp > config.duration || !e.checkpointIndex)
-            continue;
-        const auto &cp = checkpoints[*e.checkpointIndex];
-        output.writeCheckpointEvent(
-            e.timestamp, cp.checkpointType == "RFID" ? "RFID_CHECKPOINT" : "POWER_DRAW",
-            e.stationId,
-            observationPolicy.shouldExposeCheckpointIdentity(e.stationId, cp.identifiesUnit)
-                ? std::optional<UnitId>{e.unitId}
-                : std::nullopt,
-            cp.checkpointId);
-    }
+    if (!e.checkpointIndex || *e.checkpointIndex >= checkpoints.size())
+        return;
+    const auto &cp = checkpoints[*e.checkpointIndex];
+    output.writeCheckpointEvent(
+        e.timestamp, cp.checkpointType == "RFID" ? "RFID_CHECKPOINT" : "POWER_DRAW",
+        e.stationId,
+        observationPolicy.shouldExposeCheckpointIdentity(e.stationId, cp.identifiesUnit)
+            ? std::optional<UnitId>{e.unitId}
+            : std::nullopt,
+        cp.checkpointId);
 }
 void Simulation::handleProcessingComplete(const SimEvent &e)
 {
@@ -380,8 +375,9 @@ void Simulation::run()
             handleProcessingComplete(e);
         else if (e.type == SimEventType::SENSOR_SAMPLE)
             handleSensorSample(e);
+        else if (e.type == SimEventType::CHECKPOINT_RECORDED)
+            handleCheckpointRecorded(e);
     }
-    flushCheckpointEvents();
     output.writeRunMetadata(runId, config.randomSeed, config.duration, stations.size(),
                             nextUnitId - 1);
     output.close();

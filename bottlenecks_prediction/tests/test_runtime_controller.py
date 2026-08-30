@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from light_zone.light_zone_runtime import BOTTLENECK_FEATURES
@@ -177,7 +178,6 @@ def test_zero_buffer_station_is_not_emitted_to_model(tmp_path: Path) -> None:
     packets = controller.process_event(_event(1_000, "UNIT_ARRIVED", "S02", queue=1))
     assert len(packets) == 1
     assert packets[0].station_id == "S02"
-
 
 def test_corridor_enters_from_upstream_light_completion_and_does_not_double_enter(tmp_path: Path) -> None:
     stations_csv = tmp_path / "stations.csv"

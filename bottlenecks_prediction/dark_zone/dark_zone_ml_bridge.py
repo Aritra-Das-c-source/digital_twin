@@ -37,7 +37,7 @@ from dark_zone_feature_reconstructor import (
     RECENT_MS,
 )
 from multi_station_tracker import MultiStationConfig, MultiStationParticleFilter
-from orchestrator import DarkZoneEvent, DarkZoneOrchestrator, EventType
+from orchestrator import DarkZoneEvent, DarkZoneOrchestrator, EventType, power_draw_likelihood
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +630,54 @@ class SingleStationMLBridge:
         if emit and vid in self.orch.active and ev.event_type != EventType.TICK:
             self.emit_active(vid, ev.ts, trigger=ev.event_type.value)
 
+    def apply_anonymous_power_draw(
+        self, station_id: str, progress: float, ts_s: float, sensor_std: float = 0.12
+    ) -> None:
+        """Apply one non-identifying power observation to the active population.
+
+        A CT/power sensor observes that *some* unit caused activity but does not
+        identify which one.  We use a lightweight JPDA-style association: each
+        active track receives only its posterior association probability, not a
+        full-strength duplicate observation.
+        """
+        sid = str(station_id)
+        vids = [
+            str(vid) for vid, meta in self.orch.meta.items()
+            if str(meta.get("station")) == sid and vid in self.orch.active
+        ]
+        if not vids:
+            return
+
+        scores: list[float] = []
+        likelihoods: list[np.ndarray] = []
+        for vid in vids:
+            pf = self.orch.active[vid]
+            dt = max(0.0, float(ts_s) - self.orch.last_event_ts.get(vid, float(ts_s)))
+            if dt > 0:
+                pf.predict(dt)
+            self.orch.last_event_ts[vid] = float(ts_s)
+            lik = power_draw_likelihood(float(progress), sensor_std=float(sensor_std))(pf.progress)
+            likelihoods.append(np.asarray(lik, dtype=float))
+            scores.append(float(np.average(lik, weights=pf.weights)))
+
+        total = float(sum(scores))
+        if not np.isfinite(total) or total <= 0:
+            return
+        for vid, lik, score in zip(vids, likelihoods, scores):
+            pf = self.orch.active[vid]
+            beta = float(score / total)
+            norm = max(float(score), 1e-300)
+            # Mixture update: with probability beta this track generated the
+            # observation; otherwise its state is unchanged. Expected factor=1.
+            tempered = (1.0 - beta) + beta * (lik / norm)
+            pf.update(lambda _progress, values=tempered: values)
+            self.orch._persist(vid)
+
+        self.evidence_routed += 1
+        for vid in vids:
+            if vid in self.orch.active:
+                self.emit_active(vid, float(ts_s), trigger="power_draw_population")
+
     def emit_active(self, vehicle_id: str, ts_seconds: float, trigger="interval"):
         vid = str(vehicle_id)
         if vid not in self.orch.active:
@@ -741,7 +789,7 @@ def detect_corridor_zones(stations: pd.DataFrame, station_events: pd.DataFrame) 
 
 
 class CorridorMLBridge:
-    def __init__(self, stations, models, units, zones, run_id, collector, n_particles=3000, residence_bundle=None):
+    def __init__(self, stations, models, units, zones, run_id, collector, n_particles=3000, residence_bundle=None, rng_seed=None):
         self.stations = stations
         self.models = models
         self.units = units
@@ -751,6 +799,7 @@ class CorridorMLBridge:
         self.recon = DarkZoneFeatureReconstructor(stations)
         self.n_particles = n_particles
         self.residence_bundle = residence_bundle
+        self.rng_seed = None if rng_seed is None else int(rng_seed)
         self.active: dict[str, CorridorState] = {}
         self.archives: list[CorridorArchive] = []
         self.station_state: dict[str, StationRuntime] = defaultdict(StationRuntime)
@@ -816,10 +865,18 @@ class CorridorMLBridge:
             dists[sid] = dm
             qualities.append(float(q))
             sources.append(src)
+        rng = None
+        if self.rng_seed is not None:
+            payload = f"{self.rng_seed}|{self.run_id}|corridor|{zone_id}|{vehicle_id}|{float(ts_s):.9f}"
+            derived = int.from_bytes(
+                hashlib.blake2b(payload.encode("utf-8"), digest_size=8).digest(), "big"
+            )
+            rng = np.random.default_rng(derived)
         mpf = MultiStationParticleFilter(
             zone.sequence,
             dists,
             config=MultiStationConfig(n_particles=self.n_particles),
+            rng=rng,
         )
         quality = float(min(qualities)) if qualities else 0.42
         source = ";".join(sorted(set(sources)))
@@ -868,6 +925,120 @@ class CorridorMLBridge:
         self.evidence_applied += 1
         self.record_zone_queue(state.zone.zone_id, ts_s)
         self.emit(vid, ts_s, trigger="corridor_checkpoint")
+
+    def apply_anonymous_checkpoint(
+        self, station_id: str, progress: float, ts_s: float, sensor_std: float = 0.12
+    ) -> None:
+        """Softly associate a non-identifying checkpoint with active corridor tracks.
+
+        The event means activity occurred near a physical station/progress, but
+        not which unit caused it.  Association probabilities are derived from
+        each track's current evidence likelihood, avoiding the incorrect choice
+        of applying the same full-strength observation independently to every unit.
+        """
+        sid = str(station_id)
+        zone_ids = [zid for zid, zone in self.zones.items() if sid in zone.sequence]
+        if not zone_ids:
+            self.evidence_skipped += 1
+            return
+        zid = zone_ids[0]
+        states = self._active_for_zone(zid)
+        if not states:
+            self.evidence_skipped += 1
+            return
+        self._advance_zone(zid, float(ts_s))
+
+        likelihoods: list[np.ndarray] = []
+        scores: list[float] = []
+        for state in states:
+            lik = state.mpf.checkpoint_likelihood_values(
+                sid, float(progress), sensor_std=float(sensor_std)
+            )
+            likelihoods.append(lik)
+            scores.append(float(np.average(lik, weights=state.mpf.weights)))
+
+        total = float(sum(scores))
+        if not np.isfinite(total) or total <= 0:
+            self.evidence_skipped += 1
+            return
+        for state, lik, score in zip(states, likelihoods, scores):
+            beta = float(score / total)
+            norm = max(float(score), 1e-300)
+            tempered = (1.0 - beta) + beta * (lik / norm)
+            state.mpf.update_likelihood_values(tempered)
+
+        self._invalidate_zone_cache(zid)
+        self.evidence_applied += 1
+        self.record_zone_queue(zid, float(ts_s))
+        for vid, state in list(self.active.items()):
+            if state.zone.zone_id == zid:
+                self.emit(vid, float(ts_s), trigger="corridor_power_draw_population")
+
+    def apply_anonymous_station_evidence(
+        self,
+        station_id: str,
+        ts_s: float,
+        wrong_station_floor: float = 0.05,
+    ) -> dict[str, float]:
+        """Condition corridor tracks on anonymous station-local activity.
+
+        SENSOR telemetry reveals the physical station at which activity was
+        observed, but not the unit identity or progress.  We therefore perform
+        the same JPDA-style population association used for anonymous power
+        evidence, using only station identity likelihood.  The returned mapping
+        is the posterior association probability for each active vehicle and is
+        intended for other causal consumers (for example defect telemetry
+        attribution).
+        """
+        sid = str(station_id)
+        zone_ids = [zid for zid, zone in self.zones.items() if sid in zone.sequence]
+        if not zone_ids:
+            self.evidence_skipped += 1
+            return {}
+        zid = zone_ids[0]
+        states = self._active_for_zone(zid)
+        if not states:
+            self.evidence_skipped += 1
+            return {}
+        self._advance_zone(zid, float(ts_s))
+
+        likelihoods: list[np.ndarray] = []
+        scores: list[float] = []
+        vids: list[str] = []
+        for vid, state in self.active.items():
+            if state.zone.zone_id != zid:
+                continue
+            particle_station, _ = state.mpf._current_station_and_progress()
+            target_idx = state.mpf.station_sequence.index(sid)
+            lik = np.where(
+                particle_station == target_idx,
+                1.0,
+                float(wrong_station_floor),
+            )
+            likelihoods.append(lik)
+            scores.append(float(np.average(lik, weights=state.mpf.weights)))
+            vids.append(str(vid))
+
+        total = float(sum(scores))
+        if not np.isfinite(total) or total <= 0:
+            self.evidence_skipped += 1
+            return {}
+
+        association = {vid: float(score / total) for vid, score in zip(vids, scores)}
+        for vid, lik, score in zip(vids, likelihoods, scores):
+            state = self.active[vid]
+            beta = association[vid]
+            norm = max(float(score), 1e-300)
+            tempered = (1.0 - beta) + beta * (lik / norm)
+            state.mpf.update_likelihood_values(tempered)
+
+        self._invalidate_zone_cache(zid)
+        self.evidence_applied += 1
+        self.record_zone_queue(zid, float(ts_s))
+        for vid in vids:
+            if vid in self.active:
+                self.emit(vid, float(ts_s), trigger="corridor_sensor_population")
+        return association
 
     def tick(self, vehicle_id: str, ts_s: float):
         vid = str(vehicle_id)

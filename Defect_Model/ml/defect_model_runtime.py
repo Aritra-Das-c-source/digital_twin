@@ -25,9 +25,14 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from feature_schema import CATEGORICAL_FEATURES, DEFECT_FEATURES  # noqa: E402
-from ml.defect_explainer import DefectShapExplainer  # noqa: E402
-from runtime.defect_feature_runtime import DefectFeaturePacket  # noqa: E402
+try:
+    from ..src.feature_schema import CATEGORICAL_FEATURES, DEFECT_FEATURES
+    from .defect_explainer import DefectShapExplainer
+    from ..runtime.defect_feature_runtime import DefectFeaturePacket
+except ImportError:  # direct legacy execution with Defect_Model on sys.path
+    from feature_schema import CATEGORICAL_FEATURES, DEFECT_FEATURES  # noqa: E402
+    from ml.defect_explainer import DefectShapExplainer  # noqa: E402
+    from runtime.defect_feature_runtime import DefectFeaturePacket  # noqa: E402
 
 
 def _json_safe(value: Any) -> Any:
@@ -71,6 +76,12 @@ class DefectPrediction:
     warning: bool
     event_id: Optional[str] = None
     event_sequence: Optional[int] = None
+    route: str = "LIGHT"
+    prediction_trigger: str = "UNIT_ARRIVED"
+    state_confidence: float = 1.0
+    data_source: str = "direct_station_event"
+    estimated_transition_time_ms: Optional[int] = None
+    transition_confirmation_lag_ms: int = 0
 
     # Optional post-ML explanation fields.
     explanation_available: bool = False
@@ -394,6 +405,12 @@ class DefectModelRuntime:
             warning=warning,
             event_id=packet.event_id,
             event_sequence=packet.event_sequence,
+            route=str(packet.route),
+            prediction_trigger=str(packet.prediction_trigger),
+            state_confidence=float(packet.state_confidence),
+            data_source=str(packet.data_source),
+            estimated_transition_time_ms=packet.estimated_transition_time_ms,
+            transition_confirmation_lag_ms=int(packet.transition_confirmation_lag_ms),
         )
 
         if explain:

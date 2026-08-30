@@ -71,7 +71,6 @@ class Simulation
     std::vector<CheckpointDefinition> checkpoints;
     ObservationPolicy observationPolicy;
     std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> events;
-    std::priority_queue<SimEvent, std::vector<SimEvent>, EventCompare> checkpointEvents;
     OutputWriter output;
 
     Time sampleCycleTime(const Station&, UnitId);
@@ -94,5 +93,5 @@ class Simulation
     Time sensorSamplingInterval(const Station&) const;
     Time nextSensorSamplingInterval(const Station&);
     void scheduleCheckpointEvents(const Station&, UnitId);
-    void flushCheckpointEvents();
+    void handleCheckpointRecorded(const SimEvent&);
 };

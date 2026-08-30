@@ -17,8 +17,14 @@ import xgboost as xgb
 
 try:
     from .train_bottleneck_xgboost import TARGET, load_dataset
+    from ..model_io import load_bottleneck_model_bundle
 except ImportError:  # Direct script execution
+    import sys
+    package_root = Path(__file__).resolve().parents[2]
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
     from train_bottleneck_xgboost import TARGET, load_dataset
+    from ml.model_io import load_bottleneck_model_bundle
 
 
 def sigmoid(x):
@@ -46,8 +52,9 @@ def main() -> int:
     p.add_argument("--local-per-class", type=int, default=5)
     args = p.parse_args()
 
-    bundle = joblib.load(args.model_dir / "bottleneck_model_bundle.joblib")
-    model = bundle["model"]
+    bundle, model, _ = load_bottleneck_model_bundle(
+        args.model_dir / "bottleneck_model_bundle.joblib"
+    )
     features = list(bundle["features"])
     categorical = list(bundle["categorical_features"])
     category_levels = bundle["category_levels"]

@@ -44,11 +44,10 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from feature_schema import (  # noqa: E402
-    CATEGORICAL_FEATURES,
-    DEFECT_FEATURES,
-    RECENT_MS,
-)
+try:
+    from ..src.feature_schema import CATEGORICAL_FEATURES, DEFECT_FEATURES, RECENT_MS
+except ImportError:  # direct legacy execution
+    from feature_schema import CATEGORICAL_FEATURES, DEFECT_FEATURES, RECENT_MS  # noqa: E402
 
 ST_RE = re.compile(r"^S(\d+)", re.I)
 SENSOR_SIGNALS = ("TORQUE", "VIBRATION", "TEMPERATURE", "CURRENT")
@@ -108,6 +107,12 @@ class DefectFeaturePacket:
     final_station_id: str
     final_station_index: int
     features_30: dict[str, Any]
+    route: str = "LIGHT"
+    prediction_trigger: str = "UNIT_ARRIVED"
+    state_confidence: float = 1.0
+    data_source: str = "direct_station_event"
+    estimated_transition_time_ms: Optional[int] = None
+    transition_confirmation_lag_ms: int = 0
 
 
 @dataclass
@@ -200,6 +205,20 @@ class DefectRuntimeFeatureBuilder:
         self._active: dict[tuple[str, str], _ActiveProcessing] = {}
         self._active_by_station: dict[str, set[tuple[str, str]]] = defaultdict(set)
 
+        # DARK inference state is deliberately separate from direct LIGHT
+        # processing intervals.  Internal PROCESSING_STARTED/COMPLETED truth is
+        # never exposed.  Sensor observations attributed by the causal PF are
+        # buffered until the inferred station transition/zone exit, matching the
+        # V5 availability rule that a station's sensor history becomes usable only
+        # after that processing interval has completed.
+        self._dark_station_by_unit: dict[str, str] = {}
+        # Causal time when the runtime learned/accepted the current DARK station.
+        self._dark_entry_time_by_unit: dict[str, int] = {}
+        # PF-estimated physical transition time.  Kept separately so late evidence
+        # can recover dwell duration without ever rewinding the runtime clock.
+        self._dark_estimated_entry_time_by_unit: dict[str, int] = {}
+        self._dark_pending_sensors: dict[tuple[str, str], list[tuple[int, str, float, float]]] = defaultdict(list)
+
         # Keeps just-completed intervals long enough to handle a sensor reading
         # delivered later at the SAME timestamp. This makes replay tie-order
         # robust while preserving offline start <= sensor <= end semantics.
@@ -221,6 +240,13 @@ class DefectRuntimeFeatureBuilder:
             "processing_completions": 0,
             "unmatched_processing_completions": 0,
             "duplicate_processing_starts": 0,
+            "dark_inferred_arrivals": 0,
+            "dark_inferred_completions": 0,
+            "dark_cycle_intervals_from_pf_estimates": 0,
+            "dark_cycle_intervals_causal_fallback": 0,
+            "dark_sensor_readings_attributed": 0,
+            "dark_sensor_readings_dropped_low_confidence": 0,
+            "dark_sensor_readings_dropped_unclosed": 0,
         }
 
         if list(CATEGORICAL_FEATURES) != ["supplier_batch", "vehicle_model"]:
@@ -232,6 +258,42 @@ class DefectRuntimeFeatureBuilder:
     def feature_names(self) -> list[str]:
         return list(DEFECT_FEATURES)
 
+    def refresh_units(self, units_csv: str | Path) -> int:
+        """Refresh append-only simulator unit metadata during live operation.
+
+        The simulator flushes ``units.csv`` before a unit's first public station
+        event. Existing unit metadata is immutable: if a previously seen unit is
+        rewritten with a different model or supplier batch, live inference stops
+        rather than silently changing categorical features mid-run.
+        """
+        incoming = pd.read_csv(units_csv)
+        missing = REQUIRED_UNIT_COLUMNS - set(incoming.columns)
+        if missing:
+            raise ValueError(
+                "units.csv missing required column(s): "
+                + ", ".join(sorted(missing))
+            )
+        incoming = incoming.copy()
+        incoming["unit_id"] = incoming["unit_id"].astype(str)
+        if incoming["unit_id"].duplicated().any():
+            dup = incoming.loc[incoming["unit_id"].duplicated(), "unit_id"].tolist()
+            raise ValueError(f"Duplicate unit IDs: {dup}")
+        incoming = incoming.set_index("unit_id", drop=False)
+
+        common = self._units.index.intersection(incoming.index)
+        for uid in common:
+            for col in ("supplier_batch", "vehicle_model"):
+                old = str(self._units.at[uid, col])
+                new = str(incoming.at[uid, col])
+                if old != new:
+                    raise ValueError(
+                        f"units.csv mutated existing unit {uid!r}: {col} {old!r} -> {new!r}"
+                    )
+
+        before = len(self._units)
+        self._units = incoming
+        return int(len(self._units) - before)
+
     def reset(self) -> None:
         """Clear live histories while keeping the same station/unit configuration."""
         self._sensor_history.clear()
@@ -240,6 +302,10 @@ class DefectRuntimeFeatureBuilder:
         self._cycle_history.clear()
         self._active.clear()
         self._active_by_station.clear()
+        self._dark_station_by_unit.clear()
+        self._dark_entry_time_by_unit.clear()
+        self._dark_estimated_entry_time_by_unit.clear()
+        self._dark_pending_sensors.clear()
         self._completed_same_timestamp.clear()
         self._completed_timestamp = None
         self._next_station_event_sequence = 0
@@ -572,6 +638,10 @@ class DefectRuntimeFeatureBuilder:
                 final_station_id=self.final_station_id,
                 final_station_index=self.final_station_index,
                 features_30=features,
+                route="LIGHT",
+                prediction_trigger="UNIT_ARRIVED",
+                state_confidence=1.0,
+                data_source="direct_station_event",
             )
 
         return None
@@ -650,6 +720,200 @@ class DefectRuntimeFeatureBuilder:
             self._completed_same_timestamp.clear()
             self._completed_timestamp = timestamp_ms
         self._completed_same_timestamp[station_id].append(completed)
+
+    # ------------------------------------------------------------------
+    # DARK inferred station lifecycle
+    # ------------------------------------------------------------------
+    def _close_inferred_dark_station(
+        self,
+        unit_id: str,
+        station_id: str,
+        timestamp_ms: int,
+        *,
+        estimated_exit_time_ms: int | None = None,
+    ) -> None:
+        """Close one inferred DARK station without conflating two clocks.
+
+        ``timestamp_ms`` is the causal confirmation/availability time and therefore
+        may never move backward. ``estimated_exit_time_ms`` is the PF's best
+        estimate of when the physical transition happened.  For late PF revisions
+        we use estimated physical entry/exit times for the cycle *duration*, but the
+        ledger entry is appended only when this method is called causally.
+
+        The cycle timestamp stored in ``_cycle_history`` is the physical estimated
+        completion time.  That makes the newly learned completed upstream cycle
+        usable by a prediction emitted at the current confirmation time, matching
+        what the model expects, without changing any previously emitted row.
+        """
+        uid = str(unit_id)
+        sid = str(station_id)
+        causal_close = int(timestamp_ms)
+        key = (uid, sid)
+        causal_entry = self._dark_entry_time_by_unit.get(uid)
+        estimated_entry = self._dark_estimated_entry_time_by_unit.get(uid)
+        estimated_exit = (
+            causal_close
+            if estimated_exit_time_ms is None
+            else min(int(estimated_exit_time_ms), causal_close)
+        )
+        sidx = self._station_index(sid)
+
+        if estimated_entry is not None and estimated_exit > int(estimated_entry):
+            dwell_ms = float(estimated_exit - int(estimated_entry))
+            self._cycle_history[uid].append((estimated_exit, sidx, dwell_ms))
+            self._diagnostics["dark_cycle_intervals_from_pf_estimates"] += 1
+        elif causal_entry is not None and causal_close > int(causal_entry):
+            # Defensive fallback for an estimator revision whose physical times are
+            # non-positive/inconsistent. This still uses only causally elapsed time.
+            dwell_ms = float(causal_close - int(causal_entry))
+            self._cycle_history[uid].append((causal_close, sidx, dwell_ms))
+            self._diagnostics["dark_cycle_intervals_causal_fallback"] += 1
+
+        committed = 0
+        for sensor_t, signal, value, confidence in self._dark_pending_sensors.pop(key, []):
+            if sensor_t <= int(timestamp_ms) and np.isfinite(value):
+                self._sensor_history[str(unit_id)][signal].append(
+                    (int(sensor_t), sidx, float(value), int(timestamp_ms))
+                )
+                committed += 1
+        self._diagnostics["sensor_readings_committed"] += committed
+        self._diagnostics["dark_inferred_completions"] += 1
+
+    def process_inferred_dark_arrival(
+        self,
+        *,
+        unit_id: str,
+        station_id: str,
+        timestamp_ms: int,
+        queue_estimate: Any = None,
+        state_confidence: float = 0.0,
+        trigger: str = "dark_inferred_station",
+        estimated_transition_time_ms: int | None = None,
+    ) -> Optional[DefectFeaturePacket]:
+        """Create one causal V5 prediction at an inferred DARK station entry.
+
+        This uses only PF-derived state from public boundaries/evidence.  No hidden
+        simulator processing event is required.  A station transition closes the
+        previous inferred interval, making its sensor/cycle history available to
+        downstream predictions exactly at the causal transition time.
+        """
+        uid = str(unit_id)
+        sid = str(station_id).strip()
+        t = self._timestamp(timestamp_ms)
+        estimate_t = (
+            t if estimated_transition_time_ms is None
+            else self._timestamp(estimated_transition_time_ms)
+        )
+        if estimate_t > t:
+            raise ValueError(
+                f"DARK estimated transition time {estimate_t} cannot be later than "
+                f"causal confirmation time {t}"
+            )
+        self._advance_stream_clock(t)
+        sidx = self._station_index(sid)
+        if uid not in self._units.index:
+            raise ValueError(f"Unit {uid!r} not present in units.csv")
+
+        previous = self._dark_station_by_unit.get(uid)
+        if previous == sid:
+            return None
+        if previous is not None:
+            self._close_inferred_dark_station(
+                uid, previous, t, estimated_exit_time_ms=estimate_t
+            )
+
+        self._dark_station_by_unit[uid] = sid
+        self._dark_entry_time_by_unit[uid] = t
+        self._dark_estimated_entry_time_by_unit[uid] = estimate_t
+        queue = _number_or_nan(queue_estimate)
+        if np.isfinite(queue):
+            self._queue_history[uid].append((t, sidx, float(queue)))
+
+        features = self._build_features(
+            unit_id=uid, station_id=sid, station_index=sidx, prediction_time=t
+        )
+        self._diagnostics["predictions_emitted"] += 1
+        self._diagnostics["dark_inferred_arrivals"] += 1
+        return DefectFeaturePacket(
+            run_id=self.run_id,
+            unit_id=uid,
+            station_id=sid,
+            station_index=sidx,
+            prediction_time_ms=t,
+            event_id=None,
+            event_sequence=None,
+            final_station_id=self.final_station_id,
+            final_station_index=self.final_station_index,
+            features_30=features,
+            route="DARK_INFERRED",
+            prediction_trigger=str(trigger),
+            state_confidence=float(np.clip(state_confidence, 0.0, 1.0)),
+            data_source="particle_filter_estimate",
+            estimated_transition_time_ms=estimate_t,
+            transition_confirmation_lag_ms=max(0, t - estimate_t),
+        )
+
+    def process_dark_sensor_reading(
+        self,
+        reading: Mapping[str, Any] | pd.Series,
+        *,
+        unit_id: str,
+        attribution_confidence: float,
+        min_confidence: float = 0.55,
+    ) -> bool:
+        """Buffer one observable DARK sensor reading for a PF-attributed unit.
+
+        Association is performed outside this feature builder by the DARK PF.
+        Low-confidence readings are intentionally dropped rather than guessed.
+        Accepted readings remain unavailable to model features until the inferred
+        station transition/zone exit closes that DARK interval.
+        """
+        r = dict(reading)
+        t = self._timestamp(r.get("timestamp_ms"))
+        self._advance_stream_clock(t)
+        sid = str(r.get("station_id", "")).strip()
+        self._station_index(sid)
+        signal = str(r.get("sensor_type", "")).strip().upper()
+        value = _number_or_nan(r.get("value"))
+        conf = float(attribution_confidence)
+        self._diagnostics["sensor_readings"] += 1
+        if signal not in SENSOR_SIGNALS or not np.isfinite(value):
+            return False
+        if not np.isfinite(conf) or conf < float(min_confidence):
+            self._diagnostics["sensor_readings_unassigned"] += 1
+            self._diagnostics["dark_sensor_readings_dropped_low_confidence"] += 1
+            return False
+
+        uid = str(unit_id)
+        self._dark_pending_sensors[(uid, sid)].append(
+            (t, signal, float(value), conf)
+        )
+        self._diagnostics["sensor_readings_buffered"] += 1
+        self._diagnostics["dark_sensor_readings_attributed"] += 1
+        return True
+
+    def finalize_dark_vehicle(self, unit_id: str, timestamp_ms: int) -> None:
+        """Close the currently inferred DARK interval at an observable zone exit."""
+        uid = str(unit_id)
+        t = self._timestamp(timestamp_ms)
+        self._advance_stream_clock(t)
+        sid = self._dark_station_by_unit.pop(uid, None)
+        if sid is not None:
+            self._close_inferred_dark_station(
+                uid, sid, t, estimated_exit_time_ms=t
+            )
+        self._dark_entry_time_by_unit.pop(uid, None)
+        self._dark_estimated_entry_time_by_unit.pop(uid, None)
+
+        # Any other station buffer for this unit was never accepted as a causal
+        # station transition. Drop it explicitly at zone exit rather than letting
+        # ambiguous telemetry leak into future features or accumulate in memory.
+        leftovers = [key for key in self._dark_pending_sensors if key[0] == uid]
+        for key in leftovers:
+            self._diagnostics["dark_sensor_readings_dropped_unclosed"] += len(
+                self._dark_pending_sensors.get(key, [])
+            )
+            self._dark_pending_sensors.pop(key, None)
 
     # ------------------------------------------------------------------
     # Sensor readings

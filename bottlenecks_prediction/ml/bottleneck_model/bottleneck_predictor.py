@@ -31,6 +31,15 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
+try:
+    from ..model_io import load_bottleneck_model_bundle
+except ImportError:  # Direct script execution
+    import sys
+    package_root = Path(__file__).resolve().parents[2]
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from ml.model_io import load_bottleneck_model_bundle
+
 
 class BottleneckPredictor:
     """Load once, predict many times."""
@@ -42,10 +51,11 @@ class BottleneckPredictor:
                 f"Model bundle not found: {self.model_bundle_path}"
             )
 
-        bundle = joblib.load(self.model_bundle_path)
+        bundle, self.model, self.native_model_path = load_bottleneck_model_bundle(
+            self.model_bundle_path
+        )
 
         required_bundle_keys = {
-            "model",
             "features",
             "categorical_features",
             "category_levels",
@@ -58,7 +68,6 @@ class BottleneckPredictor:
                 + ", ".join(sorted(missing_bundle_keys))
             )
 
-        self.model = bundle["model"]
         self.features = list(bundle["features"])
         self.categorical_features = list(bundle["categorical_features"])
         self.category_levels = {

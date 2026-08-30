@@ -61,9 +61,16 @@ def _load_run(run: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     stations["station_id"] = stations["station_id"].astype(str).str.strip()
     events["station_id"] = events["station_id"].astype(str).str.strip()
     stations["station_index"] = stations["station_id"].map(station_num) - 1
+    events["timestamp_ms"] = pd.to_numeric(events["timestamp_ms"], errors="raise")
+    events["event_type"] = events["event_type"].astype(str).str.strip().str.upper()
+    # DARK_ZONE_ENTERED / DARK_ZONE_EXITED are public control boundaries for
+    # the estimator. Runtime never sends them through the LIGHT feature builder,
+    # so factory training must not treat them as ordinary station observations.
+    events = events.loc[
+        ~events["event_type"].isin({"DARK_ZONE_ENTERED", "DARK_ZONE_EXITED"})
+    ].copy()
     events["station_index"] = events["station_id"].map(station_num) - 1
     events["event_sequence"] = np.arange(len(events), dtype=np.int64)
-    events["timestamp_ms"] = pd.to_numeric(events["timestamp_ms"], errors="raise")
     return stations, events
 
 
@@ -114,6 +121,18 @@ def _validate_causal_projection(dataset: pd.DataFrame, runs: list[Path]) -> dict
     return {"rows_checked": checked_rows, "labeled_rows_checked": labeled_rows}
 
 
+def _write_materialized_dataset(dataset: pd.DataFrame, output_dir: Path) -> tuple[Path, str]:
+    """Prefer Parquet, but keep factory training runnable without a Parquet engine."""
+    parquet = output_dir / "bottleneck_causal_features.parquet"
+    try:
+        dataset.to_parquet(parquet, index=False)
+        return parquet, "parquet"
+    except ImportError:
+        csv = output_dir / "bottleneck_causal_features.csv"
+        dataset.to_csv(csv, index=False)
+        return csv, "csv_fallback_no_parquet_engine"
+
+
 def materialize(runs_root: str | Path, output: str | Path) -> Path:
     """Write derived bottleneck features; raw run folders stay the source of truth."""
     runs = discover_runs(runs_root)
@@ -137,7 +156,7 @@ def materialize(runs_root: str | Path, output: str | Path) -> Path:
 
     validation = _validate_causal_projection(dataset, runs)
 
-    dataset.to_parquet(output_path / "bottleneck_causal_features.parquet", index=False)
+    dataset_file, dataset_format = _write_materialized_dataset(dataset, output_path)
     report = {
         "schema_version": SCHEMA_VERSION,
         "created_at_utc": datetime.now(UTC).isoformat(),
@@ -145,10 +164,17 @@ def materialize(runs_root: str | Path, output: str | Path) -> Path:
         "runs": manifest_runs,
         "run_count": len(manifest_runs),
         "bottleneck_rows": int(len(dataset)),
+        "dataset_file": dataset_file.name,
+        "dataset_format": dataset_format,
         "feature_count": len(BOTTLENECK_FEATURES),
         "features": BOTTLENECK_FEATURES,
         "independent_validation": validation,
-        "causality": "Features use causal event prefixes; labels use only the defined future training horizon.",
+        "causality": "Features use causal observable event prefixes; labels use only the defined future training horizon.",
+        "dark_training_policy": (
+            "DARK_ZONE_ENTERED/EXITED are estimator control boundaries, not model training rows. "
+            "Simulator-hidden DARK stations receive no invented labels; continued training retains "
+            "their protected base-model behavior and categorical contract."
+        ),
     }
     (output_path / "dataset_summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return output_path

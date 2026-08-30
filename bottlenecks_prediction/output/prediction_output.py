@@ -17,7 +17,9 @@ XGBoost model.  It accepts either:
 * a mapping/dict containing the prediction fields.
 
 Keeping this layer independent makes the dashboard contract stable even if the
-internal project folders are reorganized later.
+internal project folders are reorganized later. Runtime TreeSHAP details are
+exposed under one nested ``explanation`` object so the flat prediction fields
+remain backwards-compatible.
 """
 
 from __future__ import annotations
@@ -190,6 +192,13 @@ def format_prediction(
             if raw.get("event_sequence") is not None
             else None
         ),
+        "explanation": {
+            "top_drivers": raw.get("top_drivers") or [],
+            "base_margin": raw.get("base_margin"),
+            "explained_probability": raw.get("explained_probability"),
+            "probability_additivity_error": raw.get("probability_additivity_error"),
+            "best_iteration_explained": raw.get("best_iteration_explained"),
+        },
     }
 
     if include_diagnostics:

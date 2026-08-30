@@ -16,6 +16,15 @@ import pandas as pd
 
 from dark_zone_feature_reconstructor import FEATURES_28
 
+try:
+    from ml.model_io import load_bottleneck_model_bundle
+except ImportError:
+    import sys
+    package_root = Path(__file__).resolve().parents[1]
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from ml.model_io import load_bottleneck_model_bundle
+
 
 def prepare_model_features(frame: pd.DataFrame, bundle: dict) -> pd.DataFrame:
     features = list(bundle["features"])
@@ -48,14 +57,13 @@ def predict_dark_zone_features(
     feature_frame: pd.DataFrame,
     model_bundle_path: str | Path,
 ) -> tuple[pd.DataFrame, dict]:
-    bundle = joblib.load(model_bundle_path)
-    required = {"model", "features", "categorical_features", "category_levels", "threshold"}
+    bundle, model, _ = load_bottleneck_model_bundle(model_bundle_path)
+    required = {"features", "categorical_features", "category_levels", "threshold"}
     missing_bundle = sorted(required - set(bundle))
     if missing_bundle:
         raise ValueError(f"Model bundle missing keys: {missing_bundle}")
 
     X = prepare_model_features(feature_frame, bundle)
-    model = bundle["model"]
     probability = np.asarray(model.predict_proba(X)[:, 1], dtype=float)
     threshold = float(bundle["threshold"])
 

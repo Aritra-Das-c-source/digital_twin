@@ -58,6 +58,7 @@ The 28 feature calculations themselves are NOT reimplemented here.  Light uses
 from __future__ import annotations
 
 import argparse
+import hashlib
 import heapq
 import json
 import sys
@@ -68,13 +69,15 @@ from typing import Any, Mapping, Optional
 import numpy as np
 import pandas as pd
 
-# Allow both `python -m runtime.runtime_controller` and direct script execution.
-if __package__ in (None, ""):
+# Allow both canonical ``bottlenecks_prediction.runtime`` imports and the
+# repository's legacy ``runtime.runtime_controller`` test/CLI import style.
+if __package__ and __package__.startswith("bottlenecks_prediction."):
+    from ..light_zone.light_zone_runtime import BOTTLENECK_FEATURES, LightZoneRuntimeFeatureBuilder
+else:
     project_root = str(Path(__file__).resolve().parents[1])
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-
-from light_zone.light_zone_runtime import BOTTLENECK_FEATURES, LightZoneRuntimeFeatureBuilder
+    from light_zone.light_zone_runtime import BOTTLENECK_FEATURES, LightZoneRuntimeFeatureBuilder
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +281,7 @@ class DigitalTwinRuntimeController:
         corridor_particles: int = 3000,
         dwell_dist: str = "gamma",
         config_prior_scale: float = 1.0,
+        random_seed: Optional[int] = None,
     ):
         if prediction_interval_s <= 0:
             raise ValueError("prediction_interval_s must be > 0")
@@ -287,6 +291,7 @@ class DigitalTwinRuntimeController:
         self.run_id = str(run_id)
         self.prediction_interval_s = float(prediction_interval_s)
         self.corridor_particles = int(corridor_particles)
+        self.random_seed = None if random_seed is None else int(random_seed)
 
         self.stations = pd.read_csv(configured_stations_csv)
         self.stations["station_id"] = self.stations["station_id"].astype(str).str.strip()
@@ -298,13 +303,15 @@ class DigitalTwinRuntimeController:
 
         self.light = LightZoneRuntimeFeatureBuilder(self.stations)
 
-        # The frozen bottleneck target is undefined for zero-capacity buffers
-        # (e.g. S01: 0 >= 0 would be trivially true), and those stations were
-        # therefore excluded from the trained model contract. Keep processing
-        # topology/events normally, but never emit a model packet for them.
+        # The frozen bottleneck target is defined only for stations with a
+        # positive waiting-buffer capacity.  Zero-buffer source stations (S01 in
+        # the reference line) never had eligible labels during training, so they
+        # are intentionally excluded from this model rather than forced through
+        # an unknown categorical level.  Supporting them would require a target
+        # redesign + retraining, not a runtime workaround.
         buffer_capacity = pd.to_numeric(self.stations["buffer_capacity"], errors="coerce")
         self.model_eligible_station_ids = set(
-            self.stations.loc[buffer_capacity.gt(0), "station_id"].astype(str)
+            self.stations.loc[buffer_capacity > 0, "station_id"].astype(str)
         )
 
         self.single_dark_ids, self.corridor_defs = derive_dark_topology(self.stations)
@@ -364,6 +371,33 @@ class DigitalTwinRuntimeController:
                     auto_recover=False,
                     persist_mode="batched",
                 )
+                if self.random_seed is not None:
+                    # Re-seed the newly spawned single-station PF *after* the
+                    # unchanged orchestrator performs all of its normal guards/
+                    # bookkeeping.  This hook changes only reproducibility when
+                    # explicitly requested; the frozen PF/orchestrator source and
+                    # default bottleneck behavior remain untouched.
+                    original_spawn = orchestrator._spawn
+                    base_seed = int(self.random_seed)
+                    run_key = self.run_id
+
+                    def _seeded_spawn(ev, _orig=original_spawn, _orch=orchestrator):
+                        _orig(ev)
+                        pf = _orch.active.get(ev.vehicle_id)
+                        if pf is None:
+                            return
+                        payload = (
+                            f"{base_seed}|{run_key}|single|{ev.station_id}|"
+                            f"{ev.vehicle_id}|{float(ev.ts):.9f}"
+                        )
+                        seed_value = int.from_bytes(
+                            hashlib.blake2b(payload.encode("utf-8"), digest_size=8).digest(), "big"
+                        )
+                        _orch.active[ev.vehicle_id] = type(pf)(
+                            pf.dwell_dist, config=pf.cfg, rng=np.random.default_rng(seed_value)
+                        )
+
+                    orchestrator._spawn = _seeded_spawn
                 self.single_bridge = self._api["SingleStationMLBridge"](
                     orchestrator=orchestrator,
                     stations=self.stations,
@@ -405,6 +439,7 @@ class DigitalTwinRuntimeController:
                     self.collector,
                     n_particles=self.corridor_particles,
                     residence_bundle=residence_bundle,
+                    rng_seed=self.random_seed,
                 )
         else:
             self.config_prior_fallback_stations = []
@@ -450,6 +485,19 @@ class DigitalTwinRuntimeController:
             "corridor_particles": self.corridor_particles,
             "config_prior_fallback_stations": list(self.config_prior_fallback_stations),
         }
+
+    def refresh_units(self, units_csv: str | Path) -> int:
+        """Refresh unit->variant metadata during a concurrently running simulation."""
+        frame = pd.read_csv(units_csv)
+        required = {"unit_id", "vehicle_model"}
+        missing = required - set(frame.columns)
+        if missing:
+            raise ValueError("units.csv missing required columns: " + ", ".join(sorted(missing)))
+        before = len(self.units)
+        self.units.update(
+            dict(zip(frame["unit_id"].astype(str), frame["vehicle_model"].astype(str)))
+        )
+        return len(self.units) - before
 
     # -------------------------- event normalization -----------------------
 
@@ -632,6 +680,18 @@ class DigitalTwinRuntimeController:
             dashboard_state=None,
         )
 
+    @staticmethod
+    def _has_dark_vehicle(event: Mapping[str, Any]) -> bool:
+        vid = event.get("unit_id")
+        if vid is None:
+            return False
+        try:
+            if pd.isna(vid):
+                return False
+        except Exception:
+            pass
+        return bool(str(vid).strip())
+
     def _require_dark_vehicle(self, event: Mapping[str, Any]) -> str:
         vid = event.get("unit_id")
         if vid is None or (isinstance(vid, float) and np.isnan(vid)):
@@ -656,7 +716,11 @@ class DigitalTwinRuntimeController:
         if typ not in {"PROCESSING_STARTED", "PROCESSING_COMPLETED", "RFID_CHECKPOINT", "POWER_DRAW", "ANDON_SCAN"}:
             return []
 
-        vid = self._require_dark_vehicle(event)
+        has_vehicle = self._has_dark_vehicle(event)
+        if typ != "POWER_DRAW" or has_vehicle:
+            vid = self._require_dark_vehicle(event)
+        else:
+            vid = ""
         EventType = self._api["EventType"]
         DarkZoneEvent = self._api["DarkZoneEvent"]
 
@@ -696,6 +760,11 @@ class DigitalTwinRuntimeController:
             if progress is None or (isinstance(progress, float) and np.isnan(progress)):
                 # Explicit evidence without a physical progress mapping is unsafe.
                 return []
+            if typ == "POWER_DRAW" and not has_vehicle:
+                self.single_bridge.apply_anonymous_power_draw(
+                    sid, float(progress), t_s, sensor_std=0.12
+                )
+                return self._new_dark_packets(mark)
             mapped = {
                 "RFID_CHECKPOINT": EventType.RFID_CHECKPOINT,
                 "POWER_DRAW": EventType.POWER_DRAW,
@@ -767,15 +836,20 @@ class DigitalTwinRuntimeController:
         if typ in {"RFID_CHECKPOINT", "POWER_DRAW", "ANDON_SCAN"}:
             progress = event.get("checkpoint_progress")
             if progress is not None and not (isinstance(progress, float) and np.isnan(progress)):
-                vid = self._require_dark_vehicle(event)
                 sensor_std = {
                     "RFID_CHECKPOINT": 0.05,
                     "POWER_DRAW": 0.12,
                     "ANDON_SCAN": 0.03,
                 }[typ]
-                self.corridor_bridge.apply_checkpoint(
-                    vid, sid, float(progress), t_s, sensor_std=sensor_std
-                )
+                if typ == "POWER_DRAW" and not self._has_dark_vehicle(event):
+                    self.corridor_bridge.apply_anonymous_checkpoint(
+                        sid, float(progress), t_s, sensor_std=sensor_std
+                    )
+                else:
+                    vid = self._require_dark_vehicle(event)
+                    self.corridor_bridge.apply_checkpoint(
+                        vid, sid, float(progress), t_s, sensor_std=sensor_std
+                    )
                 return self._new_dark_packets(mark)
 
         return []
@@ -806,8 +880,9 @@ class DigitalTwinRuntimeController:
                 return packets
 
         if sid not in self.dark_station_ids:
-            # Zero-buffer / otherwise ineligible stations stay in the event flow
-            # but are not sent to the frozen bottleneck model.
+            # Only stations eligible under the frozen target/model contract are
+            # emitted. Zero-buffer source stations (for example S01) never had
+            # eligible training labels and are intentionally excluded.
             if sid in self.model_eligible_station_ids:
                 packets.append(self._light_packet(e))
 
@@ -829,18 +904,106 @@ class DigitalTwinRuntimeController:
     def process_evidence_event(self, event: Mapping[str, Any]) -> list[FeaturePacket]:
         """Route an explicit Dark checkpoint event not carried in station_events.csv.
 
-        Expected fields: timestamp_ms, station_id, unit_id, event_type and
-        checkpoint_progress. event_type must be RFID_CHECKPOINT, POWER_DRAW or
-        ANDON_SCAN. This keeps optional checkpoint/manual streams separate from
-        the core station-event contract.
+        Expected fields: timestamp_ms, station_id, event_type and
+        checkpoint_progress. RFID_CHECKPOINT/ANDON_SCAN require unit_id;
+        POWER_DRAW may omit it and is then treated as population-level evidence.
+        This keeps optional checkpoint/manual streams separate from the core
+        station-event contract.
         """
         e = dict(event)
         typ = str(e.get("event_type", "")).strip().upper()
         if typ not in {"RFID_CHECKPOINT", "POWER_DRAW", "ANDON_SCAN"}:
-            raise ValueError("process_evidence_event only accepts Dark checkpoint evidence")
+            raise ValueError("process_evidence_event only accepts checkpoint evidence")
         if "checkpoint_progress" not in e:
-            raise ValueError("Dark evidence event requires checkpoint_progress")
+            raise ValueError("Checkpoint evidence event requires checkpoint_progress")
+
+        # Checkpoints outside DARK topology are legitimate simulator evidence
+        # (for example the default factory's final RFID gate), but they are not
+        # model training/prediction events.  Advance the causal DARK heartbeat
+        # clock without sending the evidence through the LIGHT feature builder.
+        sid = str(e.get("station_id", "")).strip()
+        if sid not in self.dark_station_ids:
+            canonical = self._canonical_event(e)
+            return self.advance_time(int(canonical["timestamp_ms"]), include_equal=False)
+
         return self.process_event(e)
+
+    def dark_state_snapshot(self, timestamp_ms: int) -> list[dict[str, Any]]:
+        """Return causal active DARK-track beliefs at ``timestamp_ms``.
+
+        This is an observation-only integration surface for parallel consumers.
+        It exposes PF posterior summaries, never simulator hidden truth.
+        """
+        t_ms = int(timestamp_ms)
+        self.advance_time(t_ms, include_equal=False)
+        t_s = t_ms / 1000.0
+        rows: list[dict[str, Any]] = []
+
+        if self.single_bridge is not None:
+            for vid in sorted(self.single_bridge.orch.active):
+                pf = self.single_bridge.orch.active[vid]
+                last = float(self.single_bridge.orch.last_event_ts.get(vid, t_s))
+                dt = max(0.0, t_s - last)
+                if dt > 0:
+                    pf.predict(dt)
+                    self.single_bridge.orch.last_event_ts[vid] = t_s
+                meta = self.single_bridge.orch.meta.get(vid, {})
+                sid = str(meta.get("station", ""))
+                est = pf.estimate()
+                rows.append({
+                    "vehicle_id": str(vid),
+                    "route": "DARK_SINGLE",
+                    "zone_id": f"DZ_{sid}",
+                    "station_probs": {sid: 1.0},
+                    "most_likely_station": sid,
+                    "state_confidence": float(est.get("render_confidence", 0.0)),
+                    "progress_mean": float(est.get("progress_mean", float("nan"))),
+                })
+
+        if self.corridor_bridge is not None:
+            for zid in self.corridor_bridge.zones:
+                self.corridor_bridge._advance_zone(zid, t_s)
+            for vid, state in sorted(self.corridor_bridge.active.items()):
+                est = state.mpf.estimate()
+                rows.append({
+                    "vehicle_id": str(vid),
+                    "route": "DARK_CORRIDOR",
+                    "zone_id": str(state.zone.zone_id),
+                    "station_probs": dict(est["station_probs"]),
+                    "most_likely_station": str(est["most_likely_station"]),
+                    "state_confidence": float(est["confidence"]),
+                    "progress_mean": float(est["progress_in_station_mean"]),
+                })
+        return rows
+
+    def observe_anonymous_dark_station(
+        self, station_id: str, timestamp_ms: int, *, wrong_station_floor: float = 0.05
+    ) -> dict[str, float]:
+        """Apply anonymous station-only evidence and return unit associations.
+
+        Used by the parallel defect consumer for observable sensor telemetry in
+        DARK corridors.  It never consumes sensor value or hidden processing
+        state; only the public station location is used as PF evidence.
+        """
+        sid = str(station_id).strip()
+        t_ms = int(timestamp_ms)
+        self.advance_time(t_ms, include_equal=False)
+        if sid not in self.dark_station_ids:
+            return {}
+
+        if sid in self.single_dark_ids:
+            snapshots = [r for r in self.dark_state_snapshot(t_ms) if r["most_likely_station"] == sid]
+            if not snapshots:
+                return {}
+            weight = 1.0 / len(snapshots)
+            return {str(r["vehicle_id"]): weight for r in snapshots}
+
+        corridor = self.station_to_corridor[sid]
+        if self.corridor_bridge is None:
+            return {}
+        return self.corridor_bridge.apply_anonymous_station_evidence(
+            sid, t_ms / 1000.0, wrong_station_floor=float(wrong_station_floor)
+        )
 
     def flush_dark_state(self) -> None:
         """Flush Dark persistence if a persistence backend is later enabled."""

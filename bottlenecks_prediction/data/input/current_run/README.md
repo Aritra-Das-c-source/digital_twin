@@ -1,15 +1,39 @@
 # Simulator drop zone
 
-The simulation engineer should replace/update the runtime CSVs in this folder before prediction.
+This folder is the hand-off point from the simulator to the bottleneck consumer.
 
-Required:
+## Live production flow
+
+The simulator runs independently and writes/updates this folder. Start the bottleneck
+consumer with:
+
+```bash
+python run_current.py
+```
+
+Live mode requires the simulator v2.1 public files:
 - `stations.csv`
 - `units.csv`
-- `station_events.csv`
+- `dz.csv` (authoritative DARK topology)
+- `station_checkpoints.csv`
+- `runtime_events.csv` (ordered public event bus)
 
-Optional:
-- `manual_checks.csv`
+The simulator also writes `run_metadata.json` when the run completes. RFID and
+POWER_DRAW records remain observable inside DARK zones through the public event bus.
 
-The simulator must finish writing the files before `RUN_PREDICTION.bat` is started. Keep the existing schemas/column names.
+## Bundled validation example
 
-The CSVs currently included here are a small validation/example run so a fresh clone can be tested immediately.
+The small completed CSV set committed in this folder is retained for an immediate
+replay smoke test. Its `dz.csv` explicitly migrates the legacy example's five
+single-station DARK zones to the new topology contract.
+
+Run it with:
+
+```bash
+python run_current.py --mode replay
+```
+
+Replay additionally requires `station_events.csv` and `run_metadata.json` to prove
+that the input is a completed run; optional manual/checkpoint files are used when
+present. DARK calibration is built only from prior completed runs under
+`data/calibration/history/`; the current run is never used to calibrate itself.

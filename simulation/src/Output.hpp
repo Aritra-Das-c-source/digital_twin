@@ -50,7 +50,10 @@ class OutputWriter
     std::ofstream manualChecksFile;
     std::ofstream inspectionResultsFile;
     std::ofstream checkpointEventsFile;
+    // Ordered public event bus consumed by run_current.py while simulation runs.
+    std::ofstream runtimeEventsFile;
 
     std::uint64_t nextEventId = 1;
     std::uint64_t nextCheckpointEventId = 1;
+    std::uint64_t nextRuntimeSequence = 1;
 };
