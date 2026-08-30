@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -149,6 +150,8 @@ class RandomRunPlan:
     #: Only meaningful on :data:`PATHWAY_BOTTLENECK`; None on the coordinated pathway,
     #: whose replay is not paced.
     multiplier: float | None = None
+    #: DARK-corridor particle filter budget used by the coordinated runtime.
+    particles: int = 3000
     #: Environment variables the command needs; rendered into the displayed command line.
     environment: dict[str, str] = field(default_factory=dict)
     #: Preflight problems that would make the command fail. Empty means it should run.
@@ -639,6 +642,7 @@ class ExistingRuntimeAdapter:
         seed: int = 42,
         duration_ms: int = 28_800_000,
         multiplier: float = 60.0,
+        particles: int = 3000,
         pathway: str = PATHWAY_COORDINATED,
         factory: dict[str, Any] | None = None,
     ) -> RandomRunPlan:
@@ -714,10 +718,13 @@ class ExistingRuntimeAdapter:
                 *shared,
                 "--output-dir", str(output_dir),
                 "--run-id", run_id,
+                "--particles", str(int(particles)),
             ]
             if model_id:
                 command += ["--bottleneck-model-id", model_id]
-            effective_multiplier: float | None = None
+            # The coordinated runtime is intentionally unpaced; retain the selected
+            # value as run metadata so the dashboard can report the operator choice.
+            effective_multiplier: float | None = float(multiplier)
         else:
             command = [
                 sys.executable, cli, "run", "random",
@@ -739,6 +746,7 @@ class ExistingRuntimeAdapter:
             seed=int(seed),
             duration_ms=int(duration_ms),
             multiplier=effective_multiplier,
+            particles=int(particles),
             command=command,
             environment=dict(RUN_ENVIRONMENT),
             blockers=tuple(blockers),
@@ -784,20 +792,26 @@ class ExistingRuntimeAdapter:
                       fail_fast=True, progress=progress)
         return plan.expected_run_dir
 
-    def execute_planned_run(self, plan: RandomRunPlan) -> None:
-        """Documented boundary: the coordinated run is driven by the existing CLI.
+    def execute_planned_run(self, plan: RandomRunPlan, *, on_output=None) -> None:
+        """Execute the existing CLI pipeline and surface its real progress output.
 
-        Composing generation, simulation and ``system_runtime.run_dual_prescribed`` --
-        including simulator auto-build, model preflight and output-directory guards --
-        already exists in ``cli.py:command_system_run_random``. Reproducing it here
-        would be a second implementation of an existing pathway, so this raises with the
-        command to run instead.
+        This deliberately invokes the canonical command built above instead of
+        recreating scenario generation, simulation, or dual prediction in the UI.
         """
-        raise AdapterBoundary(
-            "Coordinated run execution is owned by the existing CLI. Run the command "
-            "below; the dashboard ingests the completed artifacts afterwards.",
-            plan.command,
+        if not plan.runnable:
+            raise RuntimeError("Run preflight failed: " + "; ".join(plan.blockers))
+        process = subprocess.Popen(
+            plan.command, cwd=self.project_root, env=plan.subprocess_environment(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            encoding="utf-8", errors="replace",
         )
+        assert process.stdout is not None
+        for line in process.stdout:
+            if on_output:
+                on_output(line.rstrip())
+        code = process.wait()
+        if code:
+            raise RuntimeError(f"Factory runtime exited with code {code}.")
 
     # -- status -------------------------------------------------------------------------
 

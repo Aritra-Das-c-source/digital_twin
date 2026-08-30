@@ -50,7 +50,7 @@ RUN_DURATIONS: dict[str, tuple[int, str]] = {
 }
 
 PAGES = {
-    "Overview": render_overview,
+    "Supervisor": render_overview,
     "Live Twin": render_live_twin,
     "Bottlenecks": render_bottlenecks,
     "Defects": render_defects,
@@ -135,13 +135,13 @@ def _render_sidebar(context: DashboardContext) -> str:
         _render_current_run_block(context)
         st.divider()
 
-        st.caption("Role")
-        role = st.selectbox("Role", ROLES, index=0, label_visibility="collapsed")
+        st.caption("Stakeholder mode")
+        role = st.radio("Stakeholder mode", ROLES, index=0, label_visibility="collapsed")
         st.session_state["role"] = role
 
         st.divider()
-        st.caption("Navigation")
-        page = st.radio("Navigation", list(PAGES), index=0, label_visibility="collapsed")
+        st.caption("Analysis")
+        page = st.radio("Analysis", list(PAGES), index=0, label_visibility="collapsed")
 
         st.divider()
         if context.database_ready:
@@ -153,7 +153,7 @@ def _render_sidebar(context: DashboardContext) -> str:
     return page
 
 
-def _render_run_factory_control(context: DashboardContext) -> None:
+def _render_run_factory_control_old(context: DashboardContext) -> None:
     """The RUN FACTORY action. Never fires on page load; never runs a simulation here."""
     readiness = context.readiness()
     left, right = st.columns([1, 3])
@@ -217,6 +217,62 @@ def _render_run_factory_control(context: DashboardContext) -> None:
         "can score every station in this factory, and the defect consumer's dependencies "
         "are installed."
     )
+
+
+def _render_run_factory_control(context: DashboardContext) -> None:
+    """Launch and ingest one coordinated BASE run from the dashboard."""
+    readiness = context.readiness()
+    with st.expander("Run Factory", expanded=True):
+        cols = st.columns(4)
+        cols[0].text_input("Factory", value=context.config.factory_path.name, disabled=True)
+        cols[1].text_input("Scenario", value="Random", disabled=True)
+        duration_label = cols[2].selectbox("Duration", list(RUN_DURATIONS), index=3)
+        multiplier = cols[3].select_slider("Multiplier", [1.0, 10.0, 30.0, 60.0], value=1.0)
+        particles = st.slider("DARK particle count", 300, 3000, 3000, 100)
+        st.caption("Model: BASE (fixed prototype model)")
+        for blocker in readiness.blockers:
+            st.warning(blocker)
+        for warning in readiness.warnings:
+            st.caption(f"Warning: {warning}")
+        clicked = st.button("RUN FACTORY", type="primary", disabled=not readiness.ready)
+    if not clicked or context.run_manager is None or context.ingestor is None:
+        return
+    duration_ms, _ = RUN_DURATIONS[duration_label]
+    plan = context.run_manager.plan_next_run(
+        duration_ms=duration_ms, multiplier=multiplier, particles=particles
+    )
+    if not plan.runnable:
+        st.error("Run preflight failed: " + "; ".join(plan.blockers))
+        return
+    status = st.status(f"Production Day {context.run_manager.next_production_day():02d}", expanded=True)
+    status.write("✓ Factory validated")
+    status.write("✓ Scenario generated")
+    output: list[str] = []
+    def receive(line: str) -> None:
+        if line:
+            output.append(line)
+            if len(output) <= 12:
+                status.write(f"• {line}")
+    try:
+        status.write("● Simulation running")
+        context.run_manager.start_run(plan, on_output=receive)
+        status.write("✓ Prediction processing")
+        run = context.ingestor.ingest_completed_run(
+            plan.expected_run_dir, predictions_dir=plan.output_dir, run_id=plan.run_id,
+            multiplier=multiplier, particles=particles, is_demo=context.factory.is_demo,
+        )
+        status.write("✓ Ingesting results")
+        status.update(label=f"Production Day {run.production_day:02d} Complete", state="complete")
+        st.session_state["selected_run_id"] = run.run_id
+        st.success(f"Scenario: Random | Multiplier: {multiplier:g}x | DARK particles: {particles} | Model: BASE")
+        if st.button("View Results", type="primary"):
+            st.rerun()
+    except Exception as error:
+        status.update(label="Run failed — dashboard remains usable", state="error")
+        st.error(str(error))
+        if output:
+            with st.expander("Runtime output"):
+                st.code("\n".join(output[-30:]))
 
 
 def main() -> None:

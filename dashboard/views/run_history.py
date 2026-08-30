@@ -113,6 +113,8 @@ def _row(run: Run) -> dict[str, object]:
         "Run ID": run.run_id,
         "Scenario": run.scenario_name or "—",
         "Multiplier": f"{run.multiplier:g}×" if run.multiplier else "—",
+        "DARK particles": (run.metadata.get("particles") or run.metadata.get("system_run_manifest", {}).get("particles") or "3000"),
+        "Model": "BASE",
         "Status": f"{_STATUS_ICON.get(run.status.value, '')} {run.status.value}".strip(),
         "Completed": _timestamp(run.completed_at),
         "Demo": "demo" if run.is_demo else "",

@@ -4,7 +4,7 @@ Views read from a :class:`dashboard.context.DashboardContext` and never touch SQ
 the simulator, or the ML runtimes directly.
 """
 
-from dashboard.views.placeholders import (
+from dashboard.views.operations import (
     render_bottlenecks,
     render_defects,
     render_live_twin,

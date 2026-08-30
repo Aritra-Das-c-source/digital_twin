@@ -153,6 +153,7 @@ class RunIngestor:
         production_day: int | None = None,
         run_id: str | None = None,
         multiplier: float | None = None,
+        particles: int | None = None,
         is_demo: bool = False,
     ) -> Run:
         """Record one completed run. Raises :class:`IncompleteRunError` if premature."""
@@ -222,6 +223,8 @@ class RunIngestor:
                 ),
                 "system_health_overall_status": (health or {}).get("overall_status"),
                 "system_run_manifest_present": manifest is not None,
+                "particles": particles or (manifest or {}).get("particles"),
+                "system_run_manifest": manifest or {},
                 **summaries,
             },
         )

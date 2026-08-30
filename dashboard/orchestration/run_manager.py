@@ -120,6 +120,8 @@ class RunManager:
         *,
         pathway: str = PATHWAY_COORDINATED,
         duration_ms: int | None = None,
+        multiplier: float | None = None,
+        particles: int = 3000,
     ) -> RandomRunPlan:
         """Describe the next production day's run. Executes nothing.
 
@@ -136,22 +138,19 @@ class RunManager:
             run_id=run_id,
             seed=self.config.default_seed + day,
             duration_ms=duration_ms or self.config.default_duration_ms,
-            multiplier=self.config.default_multiplier,
+            multiplier=multiplier if multiplier is not None else self.config.default_multiplier,
+            particles=particles,
             pathway=pathway,
             factory=state.data,
         )
 
-    def start_run(self, plan: RandomRunPlan) -> None:
+    def start_run(self, plan: RandomRunPlan, *, on_output=None) -> None:
         """Hand execution to the existing system.
 
-        Always raises :class:`AdapterBoundary` today: coordinated execution is owned by
-        ``cli.py``. The exception carries the exact command to run. Kept as a method so
-        a later iteration can implement it here without the UI changing.
+        The adapter invokes the established CLI command; it does not duplicate runtime
+        coordination in the dashboard.
         """
-        raise AdapterBoundary(
-            "Starting a factory run is delegated to the existing CLI pipeline.",
-            plan.command,
-        ) from None
+        self.adapter.execute_planned_run(plan, on_output=on_output)
 
     # -- history ----------------------------------------------------------------------
 
