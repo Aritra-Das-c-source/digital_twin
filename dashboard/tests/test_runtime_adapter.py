@@ -204,13 +204,39 @@ class TestRunPlanning:
         assert plan.command[2:5] == ["system", "run", "random"]
         assert "--output-dir" in plan.command
 
-    def test_coordinated_plan_has_no_multiplier(
+    def test_coordinated_plan_defaults_to_real_time_playback(
         self, adapter: ExistingRuntimeAdapter, tmp_path: Path
     ):
-        """`system run random` exposes no --mult; the replay is not paced."""
+        """`system run random` is paced by --mult; 1x is the default, real-time speed."""
         plan = self._plan(adapter, tmp_path)
-        assert plan.multiplier is None
-        assert "--mult" not in plan.command
+        assert plan.multiplier == 1.0
+        assert plan.command[plan.command.index("--mult") + 1] == "1.0"
+
+    def test_coordinated_plan_carries_the_selected_playback_speed(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        plan = self._plan(adapter, tmp_path, multiplier=10.0)
+        assert plan.multiplier == 10.0
+        assert plan.command[plan.command.index("--mult") + 1] == "10.0"
+
+    def test_coordinated_plan_rejects_a_playback_speed_outside_the_dashboard_range(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        too_slow = self._plan(adapter, tmp_path, multiplier=0.5)
+        assert any("Playback speed" in blocker for blocker in too_slow.blockers)
+        assert not too_slow.runnable
+
+        too_fast = self._plan(adapter, tmp_path, multiplier=30.0)
+        assert any("Playback speed" in blocker for blocker in too_fast.blockers)
+        assert not too_fast.runnable
+
+    def test_coordinated_plan_accepts_the_full_dashboard_range(
+        self, adapter: ExistingRuntimeAdapter, tmp_path: Path
+    ):
+        for speed in (0.75, 1.0, 20.0):
+            plan = self._plan(adapter, tmp_path, multiplier=speed)
+            assert not any("Playback speed" in blocker for blocker in plan.blockers)
+            assert plan.command[plan.command.index("--mult") + 1] == str(float(speed))
 
     def test_bottleneck_plan_carries_the_multiplier(
         self, adapter: ExistingRuntimeAdapter, tmp_path: Path

@@ -70,7 +70,9 @@ class DashboardConfig:
     #: Defaults mirroring `cli.py`'s random-run options; used to describe a planned run.
     default_seed: int = 42
     default_duration_ms: int = 28_800_000
-    default_multiplier: float = 60.0
+    #: Playback speed: 1.0x is approximately real-time. Valid range is 0.75x-20x on
+    #: the coordinated pathway; see `existing_runtime_adapter.PLAYBACK_SPEED_MIN/MAX`.
+    default_multiplier: float = 1.0
 
     @property
     def dashboard_root(self) -> Path:

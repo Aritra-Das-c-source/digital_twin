@@ -504,9 +504,21 @@ def run_dual_prescribed(
     shap_top_k: int = 3,
     force: bool = False,
     mode: str = "prescribed",
+    multiplier: float | None = None,
 ) -> dict:
+    """Run both prediction consumers over a completed run's public bus.
+
+    ``multiplier``, when given, paces both consumers' replay so simulated time
+    advances at roughly ``multiplier`` times wall-clock speed (``None`` keeps the
+    default as-fast-as-possible replay). It is forwarded verbatim to each consumer's
+    own ``--pace``/``--mult`` flags -- the same delivery-timing mechanism the
+    bottleneck-only replay path already used -- so both streams stay paced together
+    against the one shared event timeline.
+    """
     if mode not in {"prescribed", "random"}:
         raise ValueError(f"Unsupported completed dual-run mode: {mode}")
+    if multiplier is not None and multiplier <= 0:
+        raise ValueError("multiplier must be positive")
     run = Path(run_dir).expanduser().resolve()
     bus = _completed_run_preflight(run)
     rid = str(run_id or run.name)
@@ -544,6 +556,11 @@ def run_dual_prescribed(
     ]
     if defect_model_id:
         defect_cmd += ["--model-id", str(defect_model_id)]
+    if multiplier is not None:
+        # Both consumers pace independently against the same event timeline, so they
+        # advance through simulated time together without either driving the other.
+        bottleneck_cmd += ["--pace", "--mult", str(float(multiplier))]
+        defect_cmd += ["--pace", "--mult", str(float(multiplier))]
 
     health_base = {
         "schema_version": "digital-twin-system-health-v1",

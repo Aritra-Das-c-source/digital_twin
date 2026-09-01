@@ -283,7 +283,33 @@ def run_live(args: argparse.Namespace) -> int:
 
 
 
+def _pace_delay_seconds(
+    timestamp_ms: int, delivered_timestamp_ms: int | None, mult: float
+) -> float:
+    """Wall-clock delay before delivering an event paced at ``mult``x simulated speed.
+
+    The same delivery-timing formula as the bottleneck consumer's replay pacing (itself
+    matching ``main.py``'s ``replay_command``): proportional to the gap between this
+    event's ``timestamp_ms`` and the last delivered one, scaled by ``1 / mult``. Zero
+    before any event has been delivered, and never negative since causal order already
+    guarantees ``timestamp_ms`` is non-decreasing.
+    """
+    if delivered_timestamp_ms is None:
+        return 0.0
+    return max(0, timestamp_ms - delivered_timestamp_ms) / (1000.0 * mult)
+
+
 def run_replay(args: argparse.Namespace) -> int:
+    """Replay a completed run's public bus through the defect pipeline.
+
+    ``--pace``/``--mult`` mirror the bottleneck consumer's replay pacing (itself the
+    same delivery-timing mechanism as the bottleneck-only ``main.py`` replay path): a
+    delay is slept between events proportional to the gap between their
+    ``timestamp_ms`` values, scaled by ``1 / mult``, so this consumer advances through
+    simulated time in step with its bottleneck sibling on the same run.
+    """
+    if args.pace and args.mult <= 0:
+        raise ValueError("--mult must be positive when --pace is enabled")
     run_dir = Path(args.run_dir).expanduser().resolve()
     required = {
         "stations": run_dir / "stations.csv",
@@ -336,6 +362,7 @@ def run_replay(args: argparse.Namespace) -> int:
 
     records = evidence_records = predictions = 0
     expected_sequence = 1
+    delivered_timestamp_ms: int | None = None
     with required["bus"].open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         missing_bus = REQUIRED_BUS_COLUMNS - set(reader.fieldnames or [])
@@ -351,6 +378,12 @@ def run_replay(args: argparse.Namespace) -> int:
                     f"Public runtime bus sequence gap/reorder: expected {expected_sequence}, got {seq}"
                 )
             expected_sequence += 1
+            timestamp_ms = int(row["timestamp_ms"])
+            if args.pace:
+                delay_seconds = _pace_delay_seconds(timestamp_ms, delivered_timestamp_ms, args.mult)
+                if delay_seconds:
+                    time.sleep(delay_seconds)
+            delivered_timestamp_ms = timestamp_ms
             record = runtime_row_to_record(row, progress_map)
             records += 1
             if record is None:
@@ -396,6 +429,15 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--wait-seconds", type=float, default=120.0)
     p.add_argument("--poll-ms", type=float, default=50.0)
     p.add_argument("--live-batch-size", type=int, default=256)
+    p.add_argument(
+        "--pace", action="store_true",
+        help="Replay mode only: deliver events against wall-clock time at --mult "
+             "instead of as fast as possible.",
+    )
+    p.add_argument(
+        "--mult", type=float, default=1.0,
+        help="Simulation-time to event-delivery multiplier when --pace is enabled.",
+    )
     return p
 
 

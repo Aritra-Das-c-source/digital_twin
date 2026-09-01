@@ -282,8 +282,24 @@ def _render_run_factory_control(context: DashboardContext) -> None:
         duration_label = cols[2].selectbox(
             "Duration", list(RUN_DURATIONS), index=3, disabled=running
         )
-        multiplier = cols[3].select_slider(
-            "Multiplier", [1.0, 10.0, 30.0, 60.0], value=1.0, disabled=running
+        from dashboard.orchestration.existing_runtime_adapter import (
+            PLAYBACK_SPEED_MAX,
+            PLAYBACK_SPEED_MIN,
+        )
+
+        multiplier = cols[3].slider(
+            "Playback Speed",
+            min_value=PLAYBACK_SPEED_MIN,
+            max_value=PLAYBACK_SPEED_MAX,
+            value=1.0,
+            step=0.25,
+            format="%.2fx",
+            disabled=running,
+            help=(
+                "How fast simulated time advances relative to wall-clock time. 1x is "
+                "approximately real-time; this paces the coordinated runtime's actual "
+                "execution, not just what is displayed."
+            ),
         )
         particles = st.slider("DARK particle count", 300, 3000, 3000, 100, disabled=running)
         st.caption("Model: BASE (fixed prototype model)")
