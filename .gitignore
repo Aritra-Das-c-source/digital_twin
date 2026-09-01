@@ -30,3 +30,9 @@ bottlenecks_prediction/ml/bottleneck_model/bottleneck_shap_artifacts/
 bottlenecks_prediction/ml/bottleneck_model/bottleneck_calibration_artifacts/
 bottlenecks_prediction/ml/bottleneck_model/bottleneck_model_artifacts/test_predictions.csv
 bottlenecks_prediction/data/generated/
+
+# Dashboard-owned SQLite database (downstream cache; rebuildable from run artifacts)
+dashboard/data/
+dashboard/*.db
+dashboard/*.db-wal
+dashboard/*.db-shm

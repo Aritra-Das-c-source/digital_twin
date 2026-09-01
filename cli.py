@@ -52,6 +52,22 @@ SIMULATION_ROOT = PROJECT_ROOT / "simulation"
 SIMULATION_BUILD = SIMULATION_ROOT / "build"
 DEFAULT_SIMULATOR = None
 
+#: Playback-speed bounds for `system run random`'s paced coordinated replay. 1x is
+#: approximately real-time; the ceiling keeps a run from being paced so fast that
+#: sub-millisecond inter-event delays become meaningless.
+PLAYBACK_SPEED_MIN = 0.75
+PLAYBACK_SPEED_MAX = 20.0
+
+
+def _playback_speed(value: str) -> float:
+    parsed = float(value)
+    if not (PLAYBACK_SPEED_MIN <= parsed <= PLAYBACK_SPEED_MAX):
+        raise argparse.ArgumentTypeError(
+            f"--mult must be between {PLAYBACK_SPEED_MIN}x and {PLAYBACK_SPEED_MAX}x "
+            f"(got {parsed}x)"
+        )
+    return parsed
+
 
 def _system_runtime():
     # Imported lazily so ordinary factory/model commands do not pay runtime startup cost.
@@ -544,6 +560,7 @@ def command_system_run_random(args: argparse.Namespace) -> int:
         shap_top_k=args.shap_top_k,
         force=args.force,
         mode="random",
+        multiplier=args.mult,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -692,6 +709,12 @@ def build_parser() -> argparse.ArgumentParser:
     system_random.add_argument("--runs", type=Path, default=DEFAULT_RUNS / "dual_random_test")
     system_random.add_argument("--seed", type=int, default=42)
     system_random.add_argument("--duration-ms", type=int, default=28_800_000)
+    system_random.add_argument(
+        "--mult", type=_playback_speed, default=1.0,
+        help=f"Playback speed: simulated time advances this many times faster than "
+             f"wall-clock time ({PLAYBACK_SPEED_MIN}x-{PLAYBACK_SPEED_MAX}x, default 1.0 "
+             "= real-time). Paces both consumers against the shared event timeline.",
+    )
     _add_dual_common(system_random)
     system_random.set_defaults(func=command_system_run_random)
 
