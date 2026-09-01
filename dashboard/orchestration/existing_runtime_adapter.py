@@ -55,6 +55,13 @@ def station_runtime_label(station_id: int) -> str:
 #: consumer dies with a UnicodeEncodeError. UTF-8 mode prevents that.
 RUN_ENVIRONMENT: dict[str, str] = {"PYTHONUTF8": "1"}
 
+#: Playback-speed bounds for the coordinated pathway's ``--mult``. Mirrors
+#: ``cli.py``'s ``PLAYBACK_SPEED_MIN``/``PLAYBACK_SPEED_MAX`` -- duplicated rather than
+#: imported so the adapter's preflight can reject an out-of-range value before a
+#: subprocess is even built, without adding a second import path into ``cli.py``.
+PLAYBACK_SPEED_MIN = 0.75
+PLAYBACK_SPEED_MAX = 20.0
+
 #: Files ``cli.py:_run_directory`` requires before it will accept a run directory.
 COMPLETED_RUN_FILES: tuple[str, ...] = (
     "stations.csv",
@@ -147,8 +154,9 @@ class RandomRunPlan:
     seed: int
     duration_ms: int
     command: list[str]
-    #: Only meaningful on :data:`PATHWAY_BOTTLENECK`; None on the coordinated pathway,
-    #: whose replay is not paced.
+    #: Playback speed the command actually executes at, on both pathways: the
+    #: simulated-time-to-wall-clock ratio passed as ``--mult``. None only when no plan
+    #: has been built yet (the dataclass default; :meth:`plan_random_run` always sets it).
     multiplier: float | None = None
     #: DARK-corridor particle filter budget used by the coordinated runtime.
     particles: int = 3000
@@ -641,7 +649,7 @@ class ExistingRuntimeAdapter:
         run_id: str,
         seed: int = 42,
         duration_ms: int = 28_800_000,
-        multiplier: float = 60.0,
+        multiplier: float = 1.0,
         particles: int = 3000,
         pathway: str = PATHWAY_COORDINATED,
         factory: dict[str, Any] | None = None,
@@ -649,9 +657,14 @@ class ExistingRuntimeAdapter:
         """Describe one random run without executing anything.
 
         The command is an existing ``cli.py`` entry point, so the plan a dashboard shows
-        and the work the system does cannot diverge. ``multiplier`` is carried through
-        to the command only on :data:`PATHWAY_BOTTLENECK`, which is the pathway that
-        actually exposes ``--mult``.
+        and the work the system does cannot diverge. ``multiplier`` (the operator's
+        "Playback Speed") is the actual pacing both pathways execute at -- on
+        :data:`PATHWAY_COORDINATED` it becomes ``system run random --mult``, which paces
+        both prediction consumers against the run's shared event timeline; on
+        :data:`PATHWAY_BOTTLENECK` it becomes the bottleneck-only replay's own
+        ``--mult``. On the coordinated pathway it must fall within
+        :data:`PLAYBACK_SPEED_MIN`-:data:`PLAYBACK_SPEED_MAX`; an out-of-range value is
+        reported as a blocker rather than silently clamped.
 
         When ``factory`` is supplied the plan is **preflighted**: the destination
         directories must be free, a bottleneck model that can score every station is
@@ -703,6 +716,11 @@ class ExistingRuntimeAdapter:
             ready, message = self.defect_dependencies_ready()
             if not ready and message:
                 blockers.append(message)
+            if not (PLAYBACK_SPEED_MIN <= float(multiplier) <= PLAYBACK_SPEED_MAX):
+                blockers.append(
+                    f"Playback speed must be between {PLAYBACK_SPEED_MIN}x and "
+                    f"{PLAYBACK_SPEED_MAX}x (got {float(multiplier):g}x)."
+                )
 
         cli = str(self.project_root / "cli.py")
         shared = [
@@ -719,11 +737,10 @@ class ExistingRuntimeAdapter:
                 "--output-dir", str(output_dir),
                 "--run-id", run_id,
                 "--particles", str(int(particles)),
+                "--mult", str(float(multiplier)),
             ]
             if model_id:
                 command += ["--bottleneck-model-id", model_id]
-            # The coordinated runtime is intentionally unpaced; retain the selected
-            # value as run metadata so the dashboard can report the operator choice.
             effective_multiplier: float | None = float(multiplier)
         else:
             command = [

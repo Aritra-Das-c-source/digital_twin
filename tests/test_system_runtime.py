@@ -163,3 +163,106 @@ def test_pair_isolate_policy_keeps_healthy_peer_running(tmp_path: Path) -> None:
     assert health["overall_status"] == "DEGRADED"
     assert health["bottleneck"]["status"] == "FAILED_ISOLATED"
     assert health["defect"]["status"] == "PASS"
+
+
+def _minimal_completed_run(run_dir: Path) -> None:
+    """The smallest fixture `_completed_run_preflight` will accept."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "stations.csv").write_text("station_id\nS01\n", encoding="utf-8")
+    (run_dir / "units.csv").write_text("unit_id\nU000001\n", encoding="utf-8")
+    (run_dir / "station_events.csv").write_text("", encoding="utf-8")
+    (run_dir / "dz.csv").write_text("", encoding="utf-8")
+    (run_dir / "station_checkpoints.csv").write_text("", encoding="utf-8")
+    (run_dir / "run_metadata.json").write_text("{}", encoding="utf-8")
+    (run_dir / "runtime_events.csv").write_text(
+        "sequence,timestamp_ms,record_type,station_id\n1,0,STATION,S01\n",
+        encoding="utf-8",
+    )
+
+
+class _StopBeforeLaunch(Exception):
+    """Raised by a fake `_run_pair` once it has captured the commands it was given."""
+
+
+def test_run_dual_prescribed_paces_both_consumers_when_a_playback_speed_is_given(
+    tmp_path: Path,
+) -> None:
+    """The bug this guards: `--mult` used to be dropped, leaving the replay unpaced."""
+    import system_runtime as sr
+
+    run_dir = tmp_path / "run_0001"
+    _minimal_completed_run(run_dir)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_run_pair(*, bottleneck_cmd, defect_cmd, **_kwargs):
+        captured["bottleneck_cmd"] = bottleneck_cmd
+        captured["defect_cmd"] = defect_cmd
+        raise _StopBeforeLaunch
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(
+            sr, "_selected_models", lambda *a, **k: {"bottleneck": "base", "defect": "base"}
+        )
+        monkeypatch.setattr(sr, "_run_pair", fake_run_pair)
+        with pytest.raises(_StopBeforeLaunch):
+            sr.run_dual_prescribed(
+                run_dir=run_dir,
+                output_dir=tmp_path / "out",
+                run_id="R",
+                mode="random",
+                multiplier=12.5,
+            )
+    finally:
+        monkeypatch.undo()
+
+    for cmd in (captured["bottleneck_cmd"], captured["defect_cmd"]):
+        assert "--pace" in cmd
+        assert cmd[cmd.index("--mult") + 1] == "12.5"
+
+
+def test_run_dual_prescribed_stays_unpaced_when_no_playback_speed_is_given(
+    tmp_path: Path,
+) -> None:
+    """Callers that never pass `multiplier` (e.g. `system run prescribed`) are unchanged."""
+    import system_runtime as sr
+
+    run_dir = tmp_path / "run_0001"
+    _minimal_completed_run(run_dir)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_run_pair(*, bottleneck_cmd, defect_cmd, **_kwargs):
+        captured["bottleneck_cmd"] = bottleneck_cmd
+        captured["defect_cmd"] = defect_cmd
+        raise _StopBeforeLaunch
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(
+            sr, "_selected_models", lambda *a, **k: {"bottleneck": "base", "defect": "base"}
+        )
+        monkeypatch.setattr(sr, "_run_pair", fake_run_pair)
+        with pytest.raises(_StopBeforeLaunch):
+            sr.run_dual_prescribed(
+                run_dir=run_dir, output_dir=tmp_path / "out", run_id="R", mode="random"
+            )
+    finally:
+        monkeypatch.undo()
+
+    for cmd in (captured["bottleneck_cmd"], captured["defect_cmd"]):
+        assert "--pace" not in cmd
+        assert "--mult" not in cmd
+
+
+def test_run_dual_prescribed_rejects_a_non_positive_multiplier(tmp_path: Path) -> None:
+    import system_runtime as sr
+
+    run_dir = tmp_path / "run_0001"
+    _minimal_completed_run(run_dir)
+    with pytest.raises(ValueError, match="multiplier must be positive"):
+        sr.run_dual_prescribed(
+            run_dir=run_dir, output_dir=tmp_path / "out", run_id="R", mode="random",
+            multiplier=0.0,
+        )

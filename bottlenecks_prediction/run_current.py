@@ -493,12 +493,36 @@ def _run_live(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pace_delay_seconds(
+    timestamp_ms: int, delivered_timestamp_ms: int | None, mult: float
+) -> float:
+    """Wall-clock delay before delivering an event paced at ``mult``x simulated speed.
+
+    The same delivery-timing formula as ``main.py``'s ``replay_command``: proportional
+    to the gap between this event's ``timestamp_ms`` and the last delivered one, scaled
+    by ``1 / mult``. Zero before any event has been delivered -- there is nothing yet to
+    delay against -- and never negative, since causal order already guarantees
+    ``timestamp_ms`` is non-decreasing.
+    """
+    if delivered_timestamp_ms is None:
+        return 0.0
+    return max(0, timestamp_ms - delivered_timestamp_ms) / (1000.0 * mult)
+
+
 def _run_completed_replay(args: argparse.Namespace) -> int:
     """Replay the exact simulator public bus used by live mode.
 
     This intentionally avoids the legacy station_events/manual/checkpoint merge so
     completed replay and live deployment see identical observable information.
+
+    ``--pace``/``--mult`` reuse the same delivery-timing mechanism as the
+    bottleneck-only replay path (``main.py``'s ``replay_command``): a delay is slept
+    between events proportional to the gap between their ``timestamp_ms`` values,
+    scaled by ``1 / mult``, so simulated time advances at roughly ``mult`` times
+    wall-clock speed while the causal event order is unchanged.
     """
+    if args.pace and args.mult <= 0:
+        raise ValueError("--mult must be positive when --pace is enabled")
     run_dir = Path(args.run_dir).expanduser().resolve()
     files = _required_current_files(run_dir)
     files["runtime_events.csv"] = run_dir / "runtime_events.csv"
@@ -536,7 +560,11 @@ def _run_completed_replay(args: argparse.Namespace) -> int:
     records = evidence_records = predictions_written = 0
     expected_sequence = 1
     packets = []
-    batch_limit = max(1, int(args.live_batch_size))
+    # Paced replay keeps immediate emission semantics -- like main.py's replay_command,
+    # a large batch would hold predictions back until `batch_limit` events had already
+    # been slept through, which would defeat live viewing of a paced run.
+    batch_limit = 1 if args.pace else max(1, int(args.live_batch_size))
+    delivered_timestamp_ms: int | None = None
     with files["runtime_events.csv"].open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         missing_header = RUNTIME_BUS_REQUIRED_COLUMNS - set(reader.fieldnames or [])
@@ -553,6 +581,12 @@ def _run_completed_replay(args: argparse.Namespace) -> int:
                     f"Public runtime bus sequence gap/reorder: expected {expected_sequence}, got {seq}"
                 )
             expected_sequence += 1
+            timestamp_ms = int(row["timestamp_ms"])
+            if args.pace:
+                delay_seconds = _pace_delay_seconds(timestamp_ms, delivered_timestamp_ms, args.mult)
+                if delay_seconds:
+                    time.sleep(delay_seconds)
+            delivered_timestamp_ms = timestamp_ms
             kind, event = _runtime_row_to_event(row, progress_map)
             records += 1
             if kind == "ignore":
@@ -584,7 +618,7 @@ def _run_completed_replay(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Start the bottleneck consumer for data/input/current_run/."
     )
@@ -608,7 +642,20 @@ def main() -> int:
     parser.add_argument("--poll-ms", type=float, default=50.0)
     parser.add_argument("--live-batch-size", type=int, default=128,
                         help="Maximum public runtime records routed before one batched XGBoost/SHAP call")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--pace", action="store_true",
+        help="Replay mode only: deliver events against wall-clock time at --mult "
+             "instead of as fast as possible.",
+    )
+    parser.add_argument(
+        "--mult", type=float, default=1.0,
+        help="Simulation-time to event-delivery multiplier when --pace is enabled.",
+    )
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     return _run_live(args) if args.mode == "live" else _run_completed_replay(args)
 
 
