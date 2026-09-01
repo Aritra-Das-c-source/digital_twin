@@ -7,7 +7,9 @@ Launch with::
 The dashboard sits downstream of the existing Digital Twin system. Rendering a page
 reads artifacts and the dashboard's own SQLite file -- it never starts a simulation,
 never runs a model, and never launches a factory run on load. The RUN FACTORY control
-is explicit and hands execution to the existing CLI pipeline.
+is explicit and hands execution to the existing CLI pipeline, which runs as a
+background process: the script never blocks on it, so the prediction streams that
+run is writing can be read and charted while it is still executing.
 
 Every prerequisite is optional at startup: a missing factory.json, a missing database,
 an empty run history, absent prediction files and an idle runtime all render as empty
@@ -48,6 +50,10 @@ RUN_DURATIONS: dict[str, tuple[int, str]] = {
     "Short — 1 simulated hour": (3_600_000, "3-5 minutes"),
     "Smoke test — 10 simulated minutes": (600_000, "under a minute"),
 }
+
+#: How often the run-status panel re-reads the live prediction stream while a run is
+#: executing. Scoped to a Streamlit fragment, so the rest of the page stays usable.
+LIVE_STATUS_REFRESH = "2s"
 
 PAGES = {
     "Supervisor": render_overview,
@@ -153,127 +159,192 @@ def _render_sidebar(context: DashboardContext) -> str:
     return page
 
 
-def _render_run_factory_control_old(context: DashboardContext) -> None:
-    """The RUN FACTORY action. Never fires on page load; never runs a simulation here."""
-    readiness = context.readiness()
-    left, right = st.columns([1, 3])
-    with left:
-        clicked = st.button(
-            "▶  RUN FACTORY",
-            type="primary",
-            use_container_width=True,
-            disabled=not readiness.ready,
+def _live_registry():
+    """The process-wide live-run registry.
+
+    Imported lazily so the module-level import graph of the shell stays small and the
+    registry is only touched by code paths that actually care about a run.
+    """
+    from dashboard.live.session import get_registry
+
+    return get_registry()
+
+
+def _current_session():
+    """The run this process is executing, or the last one it executed."""
+    registry = _live_registry()
+    return registry.active_session() or registry.latest_session()
+
+
+def _start_run(context: DashboardContext, plan) -> None:
+    """Launch the planned run in the background and return immediately.
+
+    The Streamlit script must never sit inside the pipeline: a run is a coffee break
+    long, and blocking here would freeze every control on the page. The adapter starts
+    the canonical ``cli.py`` command and a supervising thread drains its output and
+    tails the prediction stream, so the bottleneck timeline fills in while the run is
+    still executing.
+    """
+    from dashboard.live.session import bottleneck_stream_path
+
+    session = _live_registry().create_session(
+        plan.run_id, bottleneck_stream_path(plan.output_dir)
+    )
+    if context.run_manager is not None and context.repository is not None:
+        # A PENDING row makes the run visible in history the moment it starts, and
+        # carries the predictions path the timeline is read from.
+        try:
+            context.run_manager.record_planned_run(plan, is_demo=context.factory.is_demo)
+        except Exception as error:  # a history hiccup must not block the run
+            st.warning(f"The run started but could not be recorded yet: {error}")
+    session.start(lambda: context.adapter.launch_planned_run(plan), plan=plan)
+    st.session_state["selected_run_id"] = plan.run_id
+
+
+def _ingest_finished_run(context: DashboardContext, session) -> None:
+    """Record a finished run in history exactly once.
+
+    This is bookkeeping, not a processing step the timeline waits on: the accumulated
+    prediction history is already complete and displayable before this runs.
+    """
+    from dashboard.live.session import LiveRunStatus
+
+    if session.ingested or context.ingestor is None or session.plan is None:
+        return
+    if session.status not in (LiveRunStatus.COMPLETED, LiveRunStatus.CANCELLED):
+        return
+    plan = session.plan
+    try:
+        run = context.ingestor.ingest_completed_run(
+            plan.expected_run_dir,
+            predictions_dir=plan.output_dir,
+            run_id=plan.run_id,
+            multiplier=plan.multiplier,
+            particles=plan.particles,
+            is_demo=context.factory.is_demo,
         )
-    with right:
-        for blocker in readiness.blockers:
-            st.warning(blocker)
-        for warning in readiness.warnings:
-            st.caption(f"⚠️ {warning}")
-
-    if clicked:
-        st.session_state["show_run_plan"] = True
-    if not st.session_state.get("show_run_plan") or context.run_manager is None:
+    except Exception as error:
+        # A run whose artifacts are incomplete (a cancelled one, typically) still keeps
+        # every prediction it produced; only the history row is missing.
+        st.caption(f"Run history was not updated: {error}")
+        session.mark_ingested()
         return
+    session.mark_ingested()
+    st.session_state["selected_run_id"] = run.run_id
 
-    duration_label = st.selectbox(
-        "Simulated production day",
-        list(RUN_DURATIONS),
-        index=0,
-        help=(
-            "Shorter days finish sooner. The coordinated replay runs a particle filter "
-            "over every event, so wall-clock time scales with simulated duration."
-        ),
-    )
-    duration_ms, wall_clock = RUN_DURATIONS[duration_label]
-    plan = context.run_manager.plan_next_run(duration_ms=duration_ms)
 
-    st.subheader(f"Run plan · {plan.run_id}")
-    st.caption(
-        "One run = one simulated production day. Dashboard-triggered execution is not "
-        "wired up in this prototype step — run the command below, then use Run History "
-        "→ Rebuild from artifacts to ingest the results."
-    )
-    st.caption(f"⏱️ Expect roughly **{wall_clock}** of wall-clock time. It is not hung.")
+def _render_run_progress(context: DashboardContext, session) -> None:
+    """Live status for the run this process launched."""
+    from dashboard.live.session import LiveRunStatus
 
-    for note in plan.notes:
-        st.caption(f"ℹ️ {note}")
+    progress = session.progress()
+    columns = st.columns(5)
+    columns[0].metric("Run", progress.run_id)
+    columns[1].metric("Status", progress.status.value)
+    columns[2].metric("Bottleneck predictions", progress.record_count)
+    columns[3].metric("Stations seen", progress.station_count)
+    columns[4].metric("Elapsed", f"{progress.elapsed_s / 60:.1f} min")
 
-    if not plan.runnable:
-        st.error("This run cannot start yet:")
-        for blocker in plan.blockers:
-            st.markdown(f"- {blocker}")
-        st.caption("Resolve the above and press RUN FACTORY again for an updated command.")
-        return
+    if progress.status == LiveRunStatus.RUNNING:
+        st.caption(
+            "The pipeline is running as a background process. Predictions appear on the "
+            "Bottlenecks page as the runtime emits them — there is no need to wait for "
+            "the run to finish."
+        )
+        if st.button("Stop run", key="stop_live_run"):
+            session.cancel()
+            st.rerun()
+    elif progress.status == LiveRunStatus.FAILED:
+        st.error(progress.error or "The factory runtime failed.")
+    elif progress.status == LiveRunStatus.CANCELLED:
+        st.warning("The run was stopped. Predictions produced before it stopped are kept.")
+    else:
+        st.success("Run complete. Its prediction history stays available for analysis.")
 
-    shell = st.radio(
-        "Shell",
-        ["powershell", "cmd", "bash"],
-        horizontal=True,
-        index=0 if sys.platform.startswith("win") else 2,
-    )
-    st.code(plan.command_line(shell), language="bash")
-    st.caption(
-        "Verified before display: destination directories are free, the bottleneck model "
-        "can score every station in this factory, and the defect consumer's dependencies "
-        "are installed."
-    )
+    output = session.recent_output(limit=12)
+    if output:
+        with st.expander("Runtime output"):
+            st.code("\n".join(output))
 
 
 def _render_run_factory_control(context: DashboardContext) -> None:
-    """Launch and ingest one coordinated BASE run from the dashboard."""
+    """The RUN FACTORY action. Never fires on page load, and never blocks the UI."""
+    from dashboard.live.session import LiveRunStatus
+
     readiness = context.readiness()
+    session = _current_session()
+    running = session is not None and session.is_running
+
     with st.expander("Run Factory", expanded=True):
         cols = st.columns(4)
         cols[0].text_input("Factory", value=context.config.factory_path.name, disabled=True)
         cols[1].text_input("Scenario", value="Random", disabled=True)
-        duration_label = cols[2].selectbox("Duration", list(RUN_DURATIONS), index=3)
-        multiplier = cols[3].select_slider("Multiplier", [1.0, 10.0, 30.0, 60.0], value=1.0)
-        particles = st.slider("DARK particle count", 300, 3000, 3000, 100)
+        duration_label = cols[2].selectbox(
+            "Duration", list(RUN_DURATIONS), index=3, disabled=running
+        )
+        multiplier = cols[3].select_slider(
+            "Multiplier", [1.0, 10.0, 30.0, 60.0], value=1.0, disabled=running
+        )
+        particles = st.slider("DARK particle count", 300, 3000, 3000, 100, disabled=running)
         st.caption("Model: BASE (fixed prototype model)")
         for blocker in readiness.blockers:
             st.warning(blocker)
         for warning in readiness.warnings:
             st.caption(f"Warning: {warning}")
-        clicked = st.button("RUN FACTORY", type="primary", disabled=not readiness.ready)
-    if not clicked or context.run_manager is None or context.ingestor is None:
+        clicked = st.button(
+            "RUN FACTORY", type="primary", disabled=running or not readiness.ready
+        )
+
+    if session is not None and session.status != LiveRunStatus.IDLE:
+        _render_run_status_panel(context, session)
+
+    if not clicked or context.run_manager is None:
         return
+
     duration_ms, _ = RUN_DURATIONS[duration_label]
     plan = context.run_manager.plan_next_run(
         duration_ms=duration_ms, multiplier=multiplier, particles=particles
     )
     if not plan.runnable:
-        st.error("Run preflight failed: " + "; ".join(plan.blockers))
+        st.error("Run preflight failed:")
+        for blocker in plan.blockers:
+            st.markdown(f"- {blocker}")
         return
-    status = st.status(f"Production Day {context.run_manager.next_production_day():02d}", expanded=True)
-    status.write("✓ Factory validated")
-    status.write("✓ Scenario generated")
-    output: list[str] = []
-    def receive(line: str) -> None:
-        if line:
-            output.append(line)
-            if len(output) <= 12:
-                status.write(f"• {line}")
+    # Shown only once preflight has verified it: the destination directories are free,
+    # the pinned model can score every station, and the defect consumer's dependencies
+    # are installed. This is the command the dashboard is about to run.
+    st.code(
+        plan.command_line("powershell" if sys.platform.startswith("win") else "bash"),
+        language="bash",
+    )
     try:
-        status.write("● Simulation running")
-        context.run_manager.start_run(plan, on_output=receive)
-        status.write("✓ Prediction processing")
-        run = context.ingestor.ingest_completed_run(
-            plan.expected_run_dir, predictions_dir=plan.output_dir, run_id=plan.run_id,
-            multiplier=multiplier, particles=particles, is_demo=context.factory.is_demo,
-        )
-        status.write("✓ Ingesting results")
-        status.update(label=f"Production Day {run.production_day:02d} Complete", state="complete")
-        st.session_state["selected_run_id"] = run.run_id
-        st.success(f"Scenario: Random | Multiplier: {multiplier:g}x | DARK particles: {particles} | Model: BASE")
-        if st.button("View Results", type="primary"):
-            st.rerun()
+        _start_run(context, plan)
     except Exception as error:
-        status.update(label="Run failed — dashboard remains usable", state="error")
-        st.error(str(error))
-        if output:
-            with st.expander("Runtime output"):
-                st.code("\n".join(output[-30:]))
+        st.error(f"The factory run could not be started: {error}")
+        return
+    st.rerun()
 
+
+def _render_run_status_panel(context: DashboardContext, session) -> None:
+    """Run status, refreshing itself only while the pipeline is actually executing."""
+    if not session.is_running:
+        session.refresh()
+        _ingest_finished_run(context, session)
+        _render_run_progress(context, session)
+        return
+
+    @st.fragment(run_every=LIVE_STATUS_REFRESH)
+    def _status_fragment() -> None:
+        session.refresh()
+        finished_now = not session.is_running
+        _render_run_progress(context, session)
+        if finished_now:
+            _ingest_finished_run(context, session)
+            # The whole page, not just this fragment, is stale once the run ends:
+            # history, the sidebar's current run and every view need the new row.
+            st.rerun(scope="app")
+
+    _status_fragment()
 
 def main() -> None:
     st.set_page_config(

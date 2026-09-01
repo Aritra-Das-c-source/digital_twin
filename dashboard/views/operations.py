@@ -127,12 +127,51 @@ def render_live_twin(context) -> None:
 
 
 def render_bottlenecks(context) -> None:
+    """Station bottleneck risk, live during a run and afterwards from the same history.
+
+    The timeline is read incrementally from the bottleneck stream the existing runtime
+    is writing, so it fills in while the run executes; when the run ends the same
+    accumulated history stays on screen for historical analysis.
+    """
+    from dashboard.views.live_bottlenecks import (
+        render_bottleneck_timeline,
+        resolve_feed,
+        status_banner,
+    )
+
     st.header("Bottleneck Intelligence")
-    run,b,_=_data(context)
-    if not b: st.info("No bottleneck stream for the selected run."); return
-    latest=_latest(b,"station_id"); table=sorted(({"Station":k,"Risk %":round(_risk(v,"bottleneck"),1),"Alert":bool(v.get("warning")),"Confidence %":_confidence(v),"Top factors":_drivers(v)} for k,v in latest.items()),key=lambda x:x["Risk %"],reverse=True)
-    st.bar_chart({x["Station"]:x["Risk %"] for x in table}); st.dataframe(table,hide_index=True,use_container_width=True)
-    selected=st.selectbox("Station detail", [x["Station"] for x in table]); row=latest[selected]; st.write(f"Current risk: **{_risk(row,'bottleneck'):.1f}%** · Confidence: **{_confidence(row)}%** · Main factors: **{_drivers(row)}**")
+    run = _run(context)
+    predictions_path = run.predictions_path if run else None
+    feed, session = resolve_feed(context, run.run_id if run else None, predictions_path)
+    if feed is None:
+        st.info("No run selected yet. Start a run above, or pick one from Run History.")
+        return
+
+    status_banner(session)
+    st.subheader("Bottleneck probability over simulator time")
+    render_bottleneck_timeline(feed, session)
+
+    latest = feed.state.latest_by_station()
+    if not latest:
+        return
+    st.subheader("Latest prediction per station")
+    table = sorted(
+        (
+            {
+                "Station": station,
+                "Risk %": round(point.risk_percent, 1),
+                "Alert": point.warning,
+                "Confidence %": round((point.state_confidence or 0.0) * 100),
+                "Zone": point.zone,
+                "Predictions": len(feed.state.series(station) or ()),
+            }
+            for station, point in latest.items()
+        ),
+        key=lambda row: row["Risk %"],
+        reverse=True,
+    )
+    st.bar_chart({row["Station"]: row["Risk %"] for row in table})
+    st.dataframe(table, hide_index=True, use_container_width=True)
 
 
 def render_defects(context) -> None:

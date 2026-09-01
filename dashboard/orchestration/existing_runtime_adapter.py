@@ -792,19 +792,29 @@ class ExistingRuntimeAdapter:
                       fail_fast=True, progress=progress)
         return plan.expected_run_dir
 
-    def execute_planned_run(self, plan: RandomRunPlan, *, on_output=None) -> None:
-        """Execute the existing CLI pipeline and surface its real progress output.
+    def launch_planned_run(self, plan: RandomRunPlan) -> subprocess.Popen:
+        """Start the existing CLI pipeline and return immediately.
 
-        This deliberately invokes the canonical command built above instead of
-        recreating scenario generation, simulation, or dual prediction in the UI.
+        The caller owns the process: it must drain ``stdout`` and ``wait()``. This is
+        the seam a non-blocking UI needs -- the dashboard can watch the prediction
+        streams the run is writing instead of sitting inside ``communicate()`` until the
+        whole pipeline finishes. It still launches the canonical command and nothing
+        else; no stage of the pipeline is reimplemented here.
         """
         if not plan.runnable:
             raise RuntimeError("Run preflight failed: " + "; ".join(plan.blockers))
-        process = subprocess.Popen(
+        return subprocess.Popen(
             plan.command, cwd=self.project_root, env=plan.subprocess_environment(),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace",
         )
+
+    def execute_planned_run(self, plan: RandomRunPlan, *, on_output=None) -> None:
+        """Execute the existing CLI pipeline to completion, surfacing its output.
+
+        Blocking. Use :meth:`launch_planned_run` when the caller must stay responsive.
+        """
+        process = self.launch_planned_run(plan)
         assert process.stdout is not None
         for line in process.stdout:
             if on_output:
