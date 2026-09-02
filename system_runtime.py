@@ -357,6 +357,46 @@ def _prepare_output_dir(paths: DualRunPaths, *, force: bool) -> None:
             path.unlink(missing_ok=True)
 
 
+class _TerminationGuard:
+    """Turn an external stop signal into the loop's normal cleanup path.
+
+    ``_run_pair`` already tears down both consumers on any ``BaseException`` (a
+    ``KeyboardInterrupt`` from Ctrl-C included). What it does *not* survive is a
+    plain ``SIGTERM`` -- ``Popen.terminate()`` on POSIX, or ``kill <pid>`` -- whose
+    default action kills this process outright, orphaning ``bp``/``dp``. While this
+    guard is active, ``SIGTERM`` (and ``SIGBREAK`` on Windows) instead raises
+    ``KeyboardInterrupt`` so the existing ``except BaseException`` block runs and
+    both children are terminated.
+
+    The dashboard's own cancel path does not rely on this -- it puts the whole run
+    in a Windows Job Object and kills the tree directly -- but a coordinated run
+    started any other way still cleans up after itself.
+    """
+
+    _SIGNALS = (signal.SIGTERM,) + ((signal.SIGBREAK,) if hasattr(signal, "SIGBREAK") else ())
+
+    def __enter__(self):
+        self._previous = {}
+        for sig in self._SIGNALS:
+            try:
+                self._previous[sig] = signal.signal(sig, self._on_signal)
+            except (ValueError, OSError):  # not the main thread, or unsupported here
+                pass
+        return self
+
+    def __exit__(self, *exc_info):
+        for sig, handler in self._previous.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        return False
+
+    @staticmethod
+    def _on_signal(signum, _frame):
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+
 def _terminate(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
@@ -421,6 +461,10 @@ def _run_pair(
     }
     _write_json(paths.health, state)
     seen_brc = seen_drc = None
+    # A SIGTERM to this coordinator now flows into the ``except BaseException``
+    # cleanup below instead of killing it and orphaning bp/dp.
+    _termination_guard = _TerminationGuard()
+    _termination_guard.__enter__()
     try:
         while True:
             brc, drc = bp.poll(), dp.poll()
@@ -461,6 +505,7 @@ def _run_pair(
         _write_json(paths.health, state)
         raise
     finally:
+        _termination_guard.__exit__(None, None, None)
         b_log.close()
         d_log.close()
 
