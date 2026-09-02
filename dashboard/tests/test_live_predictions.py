@@ -543,8 +543,7 @@ class TestBottlenecksPageRendersTheTimeline:
             default_timeout=60,
         )
         app.run()
-        # radio[0] is the stakeholder mode; radio[1] is the analysis page.
-        return app.sidebar.radio[1].set_value("Bottlenecks").run()
+        return app.sidebar.radio[0].set_value("Bottlenecks").run()
 
     def test_completed_run_shows_its_timeline_without_a_second_step(
         self, tmp_path: Path, monkeypatch
