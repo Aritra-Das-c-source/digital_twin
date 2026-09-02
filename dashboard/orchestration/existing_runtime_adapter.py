@@ -820,11 +820,20 @@ class ExistingRuntimeAdapter:
         """
         if not plan.runnable:
             raise RuntimeError("Run preflight failed: " + "; ".join(plan.blockers))
-        return subprocess.Popen(
+        # ``cli.py system run random`` spawns its own children (the two prediction
+        # consumers). Launch it as a killable group so cancelling the run takes the
+        # whole tree down rather than orphaning the consumers -- see
+        # :mod:`dashboard.process_tree`.
+        from dashboard import process_tree
+
+        process = subprocess.Popen(
             plan.command, cwd=self.project_root, env=plan.subprocess_environment(),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             encoding="utf-8", errors="replace",
+            **process_tree.spawn_kwargs(),
         )
+        process_tree.track(process)
+        return process
 
     def execute_planned_run(self, plan: RandomRunPlan, *, on_output=None) -> None:
         """Execute the existing CLI pipeline to completion, surfacing its output.

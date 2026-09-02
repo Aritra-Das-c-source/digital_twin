@@ -27,6 +27,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
+from dashboard import process_tree
 from dashboard.live.bottleneck_state import LiveBottleneckState
 from dashboard.live.defect_state import LiveDefectState
 from dashboard.live.stream import JsonlTailer
@@ -278,7 +279,14 @@ class LiveRunSession:
         return bottleneck_count
 
     def cancel(self) -> None:
-        """Ask the pipeline to stop. The dashboard keeps whatever it already produced."""
+        """Ask the pipeline to stop. The dashboard keeps whatever it already produced.
+
+        The launched process is ``cli.py system run random``, which spawns the two
+        prediction consumers as its own children. Terminating just the top process
+        leaves those running (Windows never reaps them, and they would keep writing
+        to the prediction streams for minutes), so the whole process tree is taken
+        down together -- see :mod:`dashboard.process_tree`.
+        """
         with self._lock:
             if self.status != LiveRunStatus.RUNNING:
                 return
@@ -286,7 +294,7 @@ class LiveRunSession:
         process = self._process
         if process is not None:
             try:
-                process.terminate()
+                process_tree.terminate_tree(process)
             except Exception as error:  # pragma: no cover - defensive
                 logger.warning("could not terminate run %s: %s", self.run_id, error)
 
