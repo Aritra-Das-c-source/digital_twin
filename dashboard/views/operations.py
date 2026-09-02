@@ -1,8 +1,13 @@
-"""Artifact-backed stakeholder and analysis views for the prototype dashboard."""
+"""Artifact-backed analysis views for the prototype dashboard.
+
+The Bottlenecks, Defects, Live Twin and Sensor Coverage views live here. The three
+stakeholder views (Supervisor, Plant Manager, Leadership) are their own modules --
+:mod:`dashboard.views.supervisor`, :mod:`dashboard.views.plant_manager`,
+:mod:`dashboard.views.leadership` -- backed by :mod:`dashboard.stakeholder`.
+"""
 from __future__ import annotations
 
 import json
-from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -42,65 +47,6 @@ def _latest(rows, key):
     result = {}
     for row in rows: result[str(row.get(key, "—"))] = row
     return result
-def _drivers(row):
-    raw = (row.get("explanation") or {}).get("top_drivers") or row.get("top_risk_drivers") or []
-    return ", ".join(str(x.get("label") or x.get("feature") or "driver") for x in raw[:3]) or "No explanation available"
-
-
-def render_supervisor(context) -> None:
-    st.header("Supervisor")
-    run, bottlenecks, defects = _data(context)
-    if not run:
-        st.info("No completed run yet. Start one from the Run Factory page to populate the operational view."); return
-    latest_b = _latest(bottlenecks, "station_id"); latest_d = _latest(defects, "unit_id")
-    alerts = [r for r in latest_b.values() if r.get("warning")] + [r for r in latest_d.values() if r.get("warning")]
-    cols = st.columns(5)
-    cols[0].metric("Production day", run.production_day); cols[1].metric("Current run", run.run_id)
-    cols[2].metric("Flow records", len(bottlenecks)); cols[3].metric("Active alerts", len(alerts))
-    cols[4].metric("Observability", f"{sum(_confidence(x) for x in latest_b.values()) // max(len(latest_b), 1)}%")
-    top = max(alerts, key=lambda r: max(_risk(r, "bottleneck"), _risk(r, "defect")), default=None)
-    st.subheader("Most important current alert")
-    if not top: st.success("No actionable current alerts in the latest predictions.")
-    else:
-        kind = "bottleneck" if "bottleneck_probability" in top else "defect"
-        st.error(f"{kind.title()} risk {_risk(top, kind):.0f}% at {top.get('station_id', top.get('unit_id'))}")
-        a, b, c = st.columns(3); a.write("**What happened?**\nRisk crossed its runtime alert threshold."); b.write(f"**Why?**\n{_drivers(top)}"); c.write(f"**What should the operator look at?**\nInspect {top.get('station_id', 'the flagged unit')} and its queue/evidence.")
-    st.subheader("Top risky stations and units")
-    left, right = st.columns(2)
-    left.dataframe(sorted(({"Station": k, "Risk %": round(_risk(v, "bottleneck"),1), "Confidence %": _confidence(v)} for k,v in latest_b.items()), key=lambda x:x["Risk %"], reverse=True)[:3], hide_index=True, use_container_width=True)
-    right.dataframe(sorted(({"Unit": k, "Risk %": round(_risk(v, "defect"),1), "Station": v.get("station_id")} for k,v in latest_d.items()), key=lambda x:x["Risk %"], reverse=True)[:3], hide_index=True, use_container_width=True)
-
-
-def render_plant_manager(context) -> None:
-    st.header("Plant Manager")
-    runs = context.run_history()
-    if not runs: st.info("Historical trends will appear after completed production days are ingested."); return
-    choice = st.selectbox("Scope", ["Current Run", "All Runs"] + [f"Production Day {r.production_day}" for r in runs])
-    scoped = runs if choice == "All Runs" else ([next(r for r in runs if r.production_day == int(choice.split()[-1]))] if choice.startswith("Production") else [runs[0]])
-    rows=[]; stations=Counter()
-    for r in scoped:
-        b=_records(Path(r.predictions_path or "") / "bottleneck_predictions.jsonl"); d=_records(Path(r.predictions_path or "") / "defect_predictions.jsonl")
-        rows.append({"Day":r.production_day,"Bottleneck alerts":sum(bool(x.get("warning")) for x in b),"Defect alerts":sum(bool(x.get("warning")) for x in d),"Prediction flow":len(b)})
-        stations.update(str(x.get("station_id")) for x in b if x.get("warning"))
-    st.metric("Simulated production days represented", len(scoped)); st.line_chart(rows, x="Day", y=["Prediction flow", "Bottleneck alerts", "Defect alerts"])
-    if stations:
-        station, count=stations.most_common(1)[0]; st.info(f"Recurring Constraint\n\nStation {station}: high bottleneck risk on {count} of {len(scoped)} simulated days.")
-    st.dataframe([{"Station":s,"Bottleneck-risk days":n} for s,n in stations.most_common()], hide_index=True, use_container_width=True)
-
-
-def render_leadership(context) -> None:
-    st.header("Leadership")
-    runs=context.run_history(); stations=Station.all_from_factory(context.factory.data or {})
-    a,b,c,d=st.columns(4); a.metric("Line count",1); b.metric("Stations",len(stations)); c.metric("Days simulated",len(runs)); d.metric("Factory coverage", f"{sum(s.sensor_coverage != 'NONE' for s in stations)/max(len(stations),1):.0%}")
-    st.subheader("Operational impact")
-    render_plant_manager(context)
-    st.subheader("Scale story")
-    st.markdown("**PILOT** — 1 LINE  \n↓  \n**PLANT** — MULTIPLE LINES  \n↓  \n**SITE** — MULTIPLE AREAS  \n↓  \n**MULTI-SITE**")
-    st.caption("Reusable factory configuration · common BASE model · modular runtime · heterogeneous sensor coverage · dashboard analytics")
-    st.subheader("Illustrative Prototype Business Impact")
-    st.caption("Simulated/illustrative only. Derived from recorded prediction activity, not plant financials.")
-    total=sum((r.metadata.get("bottleneck_stream") or {}).get("warning_count",0) for r in runs)
-    st.metric("Actionable flow signals captured", total)
 
 
 def render_live_twin(context) -> None:
