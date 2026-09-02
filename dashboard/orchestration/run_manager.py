@@ -9,7 +9,8 @@ ingestor. It never simulates, never predicts, and never writes upstream state.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dashboard.config import DashboardConfig
@@ -36,6 +37,28 @@ class RunReadiness:
 
     def __bool__(self) -> bool:
         return self.ready
+
+
+@dataclass(frozen=True)
+class RunDeletionResult:
+    """What happened when one run's history row and artifacts were deleted."""
+
+    run_id: str
+    #: History row was found and removed from the dashboard database.
+    row_deleted: bool
+    #: Directories that existed and were removed.
+    deleted_directories: tuple[Path, ...] = ()
+    #: Directories the run recorded but that were already gone (deleted safely, no-op).
+    missing_directories: tuple[Path, ...] = ()
+    #: Paths this run recorded that fall outside the dashboard's own configured roots --
+    #: skipped rather than deleted, since they are not artifacts this dashboard owns.
+    skipped_directories: tuple[Path, ...] = ()
+    #: Real failures (permission errors, a file in use, etc.), one message per path.
+    errors: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
 
 
 class RunManager:
@@ -192,4 +215,92 @@ class RunManager:
             run.path
             for run in self.adapter.list_completed_runs(self.config.runs_root)
             if str(run.path) not in known
+        ]
+
+    # -- storage management -------------------------------------------------------------
+
+    def _owned_run_directories(self, run: Run) -> list[tuple[Path, Path]]:
+        """The directories one run could own, paired with the root that must contain them.
+
+        Ownership is decided by containment under the dashboard's own configured roots,
+        never by trusting a stored path outright -- a row with a path pointing somewhere
+        else (hand-edited, or from a differently-configured dashboard instance) has that
+        path skipped rather than deleted. ``generated_dir`` is not stored on ``Run`` at
+        all; it is derived the same way :meth:`plan_next_run` derives it, from
+        ``run_id`` under the configured generated root.
+        """
+        candidates: list[tuple[Path, Path]] = []
+        if run.artifact_path:
+            # artifact_path is "<runs_root>/<run_id>/run_0001"; the whole "<run_id>"
+            # directory is what this dashboard created for the run.
+            candidates.append((Path(run.artifact_path).parent, self.config.runs_root))
+        if run.predictions_path:
+            candidates.append((Path(run.predictions_path), self.config.predictions_root))
+        candidates.append((self.config.generated_root / run.run_id, self.config.generated_root))
+        return candidates
+
+    def delete_run(self, run_id: str) -> RunDeletionResult:
+        """Delete one run's history row and the artifacts this dashboard created for it.
+
+        Never deletes the factory configuration, trained models, source code, or
+        anything outside ``runs_root`` / ``generated_root`` / ``predictions_root``. A
+        directory that is already gone is treated as successfully deleted, not an error.
+        """
+        if self.repository is None:
+            raise RuntimeError("RunManager has no repository; cannot delete run history")
+
+        run = self.repository.get_run(run_id)
+        if run is None:
+            return RunDeletionResult(run_id=run_id, row_deleted=False)
+
+        deleted: list[Path] = []
+        missing: list[Path] = []
+        skipped: list[Path] = []
+        errors: list[str] = []
+
+        for directory, root in self._owned_run_directories(run):
+            try:
+                resolved_dir = directory.resolve()
+                resolved_root = root.resolve()
+            except OSError as error:
+                errors.append(f"{directory}: {error}")
+                continue
+            # Must be a proper descendant of the root -- the root itself is never one
+            # run's artifact, so equality is refused, not treated as owned.
+            if resolved_root not in resolved_dir.parents:
+                skipped.append(directory)
+                continue
+            if not directory.exists():
+                missing.append(directory)
+                continue
+            try:
+                shutil.rmtree(directory)
+                deleted.append(directory)
+            except FileNotFoundError:
+                missing.append(directory)
+            except OSError as error:
+                errors.append(f"{directory}: {error}")
+
+        self.repository.delete_run(run_id)
+        return RunDeletionResult(
+            run_id=run_id,
+            row_deleted=True,
+            deleted_directories=tuple(deleted),
+            missing_directories=tuple(missing),
+            skipped_directories=tuple(skipped),
+            errors=tuple(errors),
+        )
+
+    def delete_all_runs(self, *, exclude_run_ids: set[str] = frozenset()) -> list[RunDeletionResult]:
+        """Delete every recorded run's history row and owned artifacts.
+
+        ``exclude_run_ids`` lets the caller keep a currently-executing run out of the
+        purge -- deleting a running run's output directory out from under its writer
+        would corrupt a live prediction stream.
+        """
+        if self.repository is None:
+            raise RuntimeError("RunManager has no repository; cannot delete run history")
+        runs = self.repository.list_runs(limit=100_000)
+        return [
+            self.delete_run(run.run_id) for run in runs if run.run_id not in exclude_run_ids
         ]

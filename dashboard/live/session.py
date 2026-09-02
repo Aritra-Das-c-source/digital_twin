@@ -28,13 +28,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 from dashboard.live.bottleneck_state import LiveBottleneckState
+from dashboard.live.defect_state import LiveDefectState
 from dashboard.live.stream import JsonlTailer
 
 logger = logging.getLogger(__name__)
 
-#: Filename of the bottleneck stream inside a run's prediction output directory. Mirrors
-#: ``system_runtime.output_paths``; the adapter remains authoritative when available.
+#: Filenames of the two prediction streams inside a run's prediction output directory.
+#: Mirrors ``system_runtime.output_paths``; the adapter remains authoritative when
+#: available. The streams are never merged -- each gets its own feed and its own state.
 BOTTLENECK_STREAM = "bottleneck_predictions.jsonl"
+DEFECT_STREAM = "defect_predictions.jsonl"
 
 #: How often the supervising thread pulls newly emitted records off disk. Short enough
 #: that the UI sees fresh points on any rerun, long enough not to spin on a large file.
@@ -67,10 +70,13 @@ class LivePredictionFeed:
     time is safe.
     """
 
-    def __init__(self, run_id: str, stream_path: str | Path):
+    def __init__(self, run_id: str, stream_path: str | Path, *, state: Any = None):
         self.run_id = run_id
         self.stream_path = Path(stream_path)
-        self.state = LiveBottleneckState(run_id=None)
+        #: Defaults to the bottleneck accumulator; pass ``state=LiveDefectState()`` for
+        #: the defect stream. Both expose the same ``clear()``/``ingest(records)`` shape,
+        #: so this class stays agnostic to which one it is tailing.
+        self.state = LiveBottleneckState(run_id=None) if state is None else state
         self._tailer = JsonlTailer(self.stream_path)
         self._lock = threading.RLock()
         self.last_poll_at: float | None = None
@@ -115,7 +121,7 @@ class LivePredictionFeed:
     def bytes_consumed(self) -> int:
         return self._tailer.offset
 
-    def snapshot(self) -> LiveBottleneckState:
+    def snapshot(self) -> Any:
         """The accumulated state. Read-only from the caller's point of view."""
         return self.state
 
@@ -158,10 +164,22 @@ class LiveRunSession:
         run_id: str,
         stream_path: str | Path,
         *,
+        defect_stream_path: str | Path | None = None,
         poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
     ):
         self.run_id = run_id
         self.feed = LivePredictionFeed(run_id, stream_path)
+        # Both prediction streams live as siblings under the same output directory
+        # (see ``system_runtime.output_paths``); default to that sibling when the
+        # caller does not name it explicitly.
+        resolved_defect_path = (
+            Path(defect_stream_path)
+            if defect_stream_path is not None
+            else Path(stream_path).parent / DEFECT_STREAM
+        )
+        self.defect_feed = LivePredictionFeed(
+            run_id, resolved_defect_path, state=LiveDefectState()
+        )
         self.poll_interval_s = poll_interval_s
         self.status = LiveRunStatus.IDLE
         self.started_at: float | None = None
@@ -247,11 +265,17 @@ class LiveRunSession:
                 self.error = self.error or f"Factory runtime exited with code {code}."
 
     def _safe_poll(self) -> int:
+        """Poll both prediction streams. Returns the bottleneck stream's new-record count."""
+        bottleneck_count = 0
         try:
-            return self.feed.poll()
+            bottleneck_count = self.feed.poll()
         except Exception as error:  # pragma: no cover - defensive
             logger.warning("polling %s failed: %s", self.feed.stream_path, error)
-            return 0
+        try:
+            self.defect_feed.poll()
+        except Exception as error:  # pragma: no cover - defensive
+            logger.warning("polling %s failed: %s", self.defect_feed.stream_path, error)
+        return bottleneck_count
 
     def cancel(self) -> None:
         """Ask the pipeline to stop. The dashboard keeps whatever it already produced."""
@@ -279,6 +303,10 @@ class LiveRunSession:
     @property
     def state(self) -> LiveBottleneckState:
         return self.feed.state
+
+    @property
+    def defect_state(self) -> LiveDefectState:
+        return self.defect_feed.state
 
     def recent_output(self, limit: int = 20) -> list[str]:
         with self._lock:
@@ -318,12 +346,18 @@ class LiveRunRegistry:
     def __init__(self):
         self._sessions: dict[str, LiveRunSession] = {}
         self._feeds: dict[str, LivePredictionFeed] = {}
+        self._defect_feeds: dict[str, LivePredictionFeed] = {}
         self._lock = threading.RLock()
 
     # -- sessions ---------------------------------------------------------------------
 
     def create_session(
-        self, run_id: str, stream_path: str | Path, *, poll_interval_s: float | None = None
+        self,
+        run_id: str,
+        stream_path: str | Path,
+        *,
+        defect_stream_path: str | Path | None = None,
+        poll_interval_s: float | None = None,
     ) -> LiveRunSession:
         """Register a session for ``run_id``, replacing any finished one."""
         with self._lock:
@@ -333,13 +367,15 @@ class LiveRunRegistry:
             session = LiveRunSession(
                 run_id,
                 stream_path,
+                defect_stream_path=defect_stream_path,
                 poll_interval_s=(
                     DEFAULT_POLL_INTERVAL_S if poll_interval_s is None else poll_interval_s
                 ),
             )
             self._sessions[run_id] = session
-            # A session's own feed supersedes any read-only feed for the same run.
+            # A session's own feeds supersede any read-only feeds for the same run.
             self._feeds.pop(run_id, None)
+            self._defect_feeds.pop(run_id, None)
             return session
 
     def session(self, run_id: str) -> LiveRunSession | None:
@@ -370,17 +406,19 @@ class LiveRunRegistry:
         with self._lock:
             self._sessions.pop(run_id, None)
             self._feeds.pop(run_id, None)
+            self._defect_feeds.pop(run_id, None)
 
     def clear(self) -> None:
         """Drop every session and feed. Intended for tests."""
         with self._lock:
             self._sessions.clear()
             self._feeds.clear()
+            self._defect_feeds.clear()
 
     # -- feeds ------------------------------------------------------------------------
 
     def feed(self, run_id: str, stream_path: str | Path) -> LivePredictionFeed:
-        """The feed for ``run_id``, rebuilt from the stream file when unknown.
+        """The bottleneck feed for ``run_id``, rebuilt from the stream file when unknown.
 
         This is what makes a completed run need no second processing step and a restarted
         dashboard lose nothing: the history is re-derived from the same file the runtime
@@ -399,6 +437,25 @@ class LiveRunRegistry:
             feed.poll()
             return feed
 
+    def defect_feed(self, run_id: str, stream_path: str | Path) -> LivePredictionFeed:
+        """The defect feed for ``run_id``, rebuilt from the stream file when unknown.
+
+        The read-only-rehydration sibling of :meth:`feed`, for a run this process did
+        not launch (ingested earlier, or from a previous dashboard start).
+        """
+        with self._lock:
+            session = self._sessions.get(run_id)
+            if session is not None:
+                return session.defect_feed
+            feed = self._defect_feeds.get(run_id)
+            if feed is not None and feed.stream_path == Path(stream_path):
+                feed.poll()
+                return feed
+            feed = LivePredictionFeed(run_id, stream_path, state=LiveDefectState())
+            self._defect_feeds[run_id] = feed
+            feed.poll()
+            return feed
+
 
 #: The one registry per dashboard process. Imported, never re-instantiated by views.
 _REGISTRY = LiveRunRegistry()
@@ -412,3 +469,8 @@ def get_registry() -> LiveRunRegistry:
 def bottleneck_stream_path(predictions_dir: str | Path) -> Path:
     """The bottleneck stream inside a run's prediction output directory."""
     return Path(predictions_dir) / BOTTLENECK_STREAM
+
+
+def defect_stream_path(predictions_dir: str | Path) -> Path:
+    """The defect stream inside a run's prediction output directory."""
+    return Path(predictions_dir) / DEFECT_STREAM

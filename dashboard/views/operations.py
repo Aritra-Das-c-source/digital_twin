@@ -51,7 +51,7 @@ def render_supervisor(context) -> None:
     st.header("Supervisor")
     run, bottlenecks, defects = _data(context)
     if not run:
-        st.info("No completed run yet. Configure and run the factory above to populate the operational view."); return
+        st.info("No completed run yet. Start one from the Run Factory page to populate the operational view."); return
     latest_b = _latest(bottlenecks, "station_id"); latest_d = _latest(defects, "unit_id")
     alerts = [r for r in latest_b.values() if r.get("warning")] + [r for r in latest_d.values() if r.get("warning")]
     cols = st.columns(5)
@@ -69,17 +69,6 @@ def render_supervisor(context) -> None:
     left, right = st.columns(2)
     left.dataframe(sorted(({"Station": k, "Risk %": round(_risk(v, "bottleneck"),1), "Confidence %": _confidence(v)} for k,v in latest_b.items()), key=lambda x:x["Risk %"], reverse=True)[:3], hide_index=True, use_container_width=True)
     right.dataframe(sorted(({"Unit": k, "Risk %": round(_risk(v, "defect"),1), "Station": v.get("station_id")} for k,v in latest_d.items()), key=lambda x:x["Risk %"], reverse=True)[:3], hide_index=True, use_container_width=True)
-
-
-def render_overview(context) -> None:
-    """Prominent stakeholder mode landing view."""
-    role = st.session_state.get("role", "Supervisor")
-    if role == "Plant Manager":
-        render_plant_manager(context)
-    elif role == "Leadership":
-        render_leadership(context)
-    else:
-        render_supervisor(context)
 
 
 def render_plant_manager(context) -> None:
@@ -144,7 +133,7 @@ def render_bottlenecks(context) -> None:
     predictions_path = run.predictions_path if run else None
     feed, session = resolve_feed(context, run.run_id if run else None, predictions_path)
     if feed is None:
-        st.info("No run selected yet. Start a run above, or pick one from Run History.")
+        st.info("No run selected yet. Start one from the Run Factory page, or pick one from Run History.")
         return
 
     status_banner(session)
@@ -170,16 +159,61 @@ def render_bottlenecks(context) -> None:
         key=lambda row: row["Risk %"],
         reverse=True,
     )
-    st.bar_chart({row["Station"]: row["Risk %"] for row in table})
+    from dashboard.views.chart_utils import percent_bar_chart
+
+    percent_bar_chart({row["Station"]: row["Risk %"] for row in table}, x_title="Station")
     st.dataframe(table, hide_index=True, use_container_width=True)
 
 
 def render_defects(context) -> None:
+    """Per-vehicle defect risk, live during a run and afterwards from the same history.
+
+    Mirrors :func:`render_bottlenecks`: the timeline is read incrementally from the
+    defect stream the existing runtime is writing, so it fills in while the run
+    executes, and the same accumulated history stays on screen once the run ends.
+    """
+    from dashboard.views.chart_utils import percent_bar_chart
+    from dashboard.views.live_defects import (
+        defect_status_banner,
+        render_defect_timeline,
+        resolve_defect_feed,
+    )
+
     st.header("Defect Intelligence")
-    _,_,d=_data(context)
-    if not d: st.info("No defect stream for the selected run."); return
-    latest=_latest(d,"unit_id"); table=sorted(({"Unit":k,"Risk %":round(_risk(v,"defect"),1),"Station":v.get("station_id"),"Inspection priority": "High" if v.get("warning") else "Monitor","Confidence %":_confidence(v),"Factors":_drivers(v)} for k,v in latest.items()),key=lambda x:x["Risk %"],reverse=True)
-    st.bar_chart({x["Unit"]:x["Risk %"] for x in table[:20]}); st.dataframe(table[:50],hide_index=True,use_container_width=True)
+    run = _run(context)
+    predictions_path = run.predictions_path if run else None
+    feed, session = resolve_defect_feed(context, run.run_id if run else None, predictions_path)
+    if feed is None:
+        st.info("No run selected yet. Start a run from Run Factory, or pick one from Run History.")
+        return
+
+    defect_status_banner(session)
+    st.subheader("Defect probability over simulator time")
+    render_defect_timeline(feed, session)
+
+    latest = feed.state.latest_by_unit()
+    if not latest:
+        return
+    st.subheader("Latest prediction per unit")
+    table = sorted(
+        (
+            {
+                "Unit": unit,
+                "Risk %": round(point.risk_percent, 1),
+                "Station": point.station_id,
+                "Inspection priority": "High" if point.warning else "Monitor",
+                "Confidence %": round((point.state_confidence or 0.0) * 100),
+                "Predictions": len(feed.state.series(unit) or ()),
+            }
+            for unit, point in latest.items()
+        ),
+        key=lambda row: row["Risk %"],
+        reverse=True,
+    )
+    percent_bar_chart(
+        {row["Unit"]: row["Risk %"] for row in table[:20]}, x_title="Unit", height=280
+    )
+    st.dataframe(table[:50], hide_index=True, use_container_width=True)
 
 
 def render_sensor_coverage(context) -> None:
@@ -192,13 +226,3 @@ def render_sensor_coverage(context) -> None:
     st.dataframe(table,hide_index=True,use_container_width=True)
     station=st.selectbox("Station", [x["Station"] for x in table]); item=next(x for x in table if x["Station"]==station)
     st.info(f"{station}\n\nCoverage: {item['Coverage']} · Confidence: {item['Prediction confidence']}\n\nSuggested improvement: candidate for low-cost sensing during the next maintenance window when coverage is limited.")
-
-
-def render_what_if(context) -> None:
-    st.header("What-If")
-    _,b,_=_data(context); latest=_latest(b,"station_id")
-    if not latest: st.info("Run the factory to enable illustrative sensitivity analysis."); return
-    station=st.selectbox("Station",list(latest)); adjustment=st.slider("Cycle time adjustment",0,20,0)
-    baseline=_risk(latest[station],"bottleneck"); adjusted=min(100,baseline*(1+adjustment/100))
-    a,c=st.columns(2); a.metric("Baseline bottleneck risk",f"{baseline:.1f}%"); c.metric("Adjusted illustrative risk",f"{adjusted:.1f}%")
-    st.caption("Illustrative sensitivity analysis based on the current risk signal; it does not run a second simulator. Downstream stations may see queue/flow impact if this constraint persists.")

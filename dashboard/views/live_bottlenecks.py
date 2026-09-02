@@ -112,13 +112,15 @@ def render_timeline_chart(feed: LivePredictionFeed, station_id: str) -> bool:
 
     import altair as alt
 
+    from dashboard.views.chart_utils import percent_scale
+
     base = alt.Chart(frame)
     line = base.mark_line(color="#4c78a8", interpolate="step-after").encode(
         x=alt.X("sim_seconds:Q", title="Simulator time (s)"),
         y=alt.Y(
             "risk_percent:Q",
             title="Bottleneck probability (%)",
-            scale=alt.Scale(domain=[0, 100]),
+            scale=percent_scale(),
         ),
     )
     points = base.mark_circle(size=45).encode(
@@ -147,7 +149,7 @@ def render_timeline_chart(feed: LivePredictionFeed, station_id: str) -> bool:
         layers.append(
             alt.Chart(threshold_frame)
             .mark_rule(color="#d62728", strokeDash=[6, 4])
-            .encode(y=alt.Y("threshold_pct:Q", scale=alt.Scale(domain=[0, 100])))
+            .encode(y=alt.Y("threshold_pct:Q", scale=percent_scale()))
         )
 
     st.altair_chart(alt.layer(*layers).properties(height=320), use_container_width=True)
